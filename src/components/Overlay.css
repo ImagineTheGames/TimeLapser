@@ -1,0 +1,104 @@
+.overlay {
+  min-height: 100vh;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  padding: 12px;
+}
+
+.overlay__bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: rgba(15, 23, 42, 0.92);
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(12px);
+}
+
+.overlay__expand {
+  background: transparent;
+  color: #94a3b8;
+  padding: 4px 6px;
+  font-size: 12px;
+  margin-right: 4px;
+}
+
+.overlay__expand:hover {
+  color: #e2e8f0;
+}
+
+.overlay__btn {
+  font-weight: 500;
+  transition: transform 0.1s, opacity 0.15s;
+}
+
+.overlay__btn:hover:not(:disabled) {
+  transform: scale(1.02);
+}
+
+.overlay__btn--record {
+  background: #dc2626;
+  color: #fff;
+}
+
+.overlay__btn--record:hover:not(:disabled) {
+  background: #ef4444;
+}
+
+.overlay__btn--pause {
+  background: #f59e0b;
+  color: #1e293b;
+}
+
+.overlay__btn--pause:hover:not(:disabled) {
+  background: #fbbf24;
+}
+
+.overlay__btn--resume {
+  background: #22c55e;
+  color: #fff;
+}
+
+.overlay__btn--stop {
+  background: #64748b;
+  color: #fff;
+}
+
+.overlay__btn--stop:hover:not(:disabled) {
+  background: #475569;
+}
+
+.overlay__btn--secondary {
+  background: rgba(148, 163, 184, 0.2);
+  color: #e2e8f0;
+}
+
+.overlay__btn--secondary:hover:not(:disabled) {
+  background: rgba(148, 163, 184, 0.35);
+}
+
+.overlay__status {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.overlay__status--rec {
+  color: #f87171;
+}
+
+.overlay__status--paused {
+  color: #fbbf24;
+}
+
+.overlay__frames {
+  font-size: 12px;
+  color: #94a3b8;
+  margin-right: 4px;
+}
+
+.overlay--expanded .overlay__bar {
+  margin-bottom: 8px;
+}
