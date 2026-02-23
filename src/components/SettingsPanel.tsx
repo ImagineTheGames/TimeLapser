@@ -8,19 +8,71 @@ interface Display {
   bounds: { x: number; y: number; width: number; height: number };
 }
 
-interface SettingsPanelProps {
-  onClose: () => void;
-  onOpenFocusAssist: () => void;
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  const v = bytes / Math.pow(k, i);
+  return `${v.toFixed(i <= 1 ? 0 : 1)} ${['B', 'KB', 'MB', 'GB'][i]}`;
 }
 
-export default function SettingsPanel({ onClose, onOpenFocusAssist }: SettingsPanelProps) {
+interface SettingsPanelProps {
+  sessionFolder: string | null;
+  frameCount: number;
+  onClose: () => void;
+  onOpenFocusAssist: () => void;
+  /** When true, panel is in flow (beside bar) and does not use fixed positioning */
+  inline?: boolean;
+}
+
+const PANEL_WIDTH = 380;
+const BAR_HEIGHT = 88;
+
+export default function SettingsPanel({ sessionFolder, frameCount, onClose, onOpenFocusAssist, inline = false }: SettingsPanelProps) {
   const [displays, setDisplays] = useState<Display[]>([]);
   const [settings, setSettings] = useState<Partial<Record<string, unknown>>>({});
+  const [sessionSizeBytes, setSessionSizeBytes] = useState<number>(0);
+  const [panelPosition, setPanelPosition] = useState<{ top?: number; right?: number; bottom?: number; left?: number }>({ top: BAR_HEIGHT, right: 12 });
 
   useEffect(() => {
-    window.timelapser.getDisplays().then(setDisplays);
-    window.timelapser.getSettings().then(setSettings);
+    window.timelapser.getDisplays().then(setDisplays).catch(() => setDisplays([]));
+    window.timelapser.getSettings().then(setSettings).catch(() => setSettings({}));
   }, []);
+
+  useEffect(() => {
+    const unsub = window.timelapser.onRegionPicked((region) => {
+      if (region) {
+        window.timelapser.getSettings().then(setSettings);
+      }
+    });
+    return unsub;
+  }, []);
+
+  useEffect(() => {
+    window.timelapser.getOverlayBoundsAndWorkArea?.()?.then(({ bounds, workArea }) => {
+      const spaceBelow = workArea.y + workArea.height - (bounds.y + bounds.height);
+      const spaceAbove = bounds.y - workArea.y;
+      const spaceRight = workArea.x + workArea.width - (bounds.x + bounds.width);
+      const spaceLeft = bounds.x - workArea.x;
+      const positionBelow = spaceBelow >= spaceAbove;
+      const positionRight = spaceRight >= spaceLeft;
+      setPanelPosition({
+        ...(positionBelow ? { top: BAR_HEIGHT } : { bottom: BAR_HEIGHT }),
+        ...(positionRight ? { left: 12 } : { right: 12 }),
+      });
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!sessionFolder) {
+      setSessionSizeBytes(0);
+      return;
+    }
+    const load = () => window.timelapser.getSessionSize(sessionFolder).then((r) => setSessionSizeBytes(r.bytes));
+    load();
+    const t = setInterval(load, 1500);
+    return () => clearInterval(t);
+  }, [sessionFolder]);
 
   const update = (key: string, value: unknown) => {
     const next = { ...settings, [key]: value };
@@ -29,7 +81,7 @@ export default function SettingsPanel({ onClose, onOpenFocusAssist }: SettingsPa
   };
 
   return (
-    <div className="settings-panel">
+    <div className={`settings-panel ${inline ? 'settings-panel--inline' : ''}`} style={inline ? undefined : panelPosition}>
       <div className="settings-panel__header">
         <h2 className="settings-panel__title">Settings</h2>
         <button type="button" className="settings-panel__close" onClick={onClose} aria-label="Close">
@@ -38,6 +90,16 @@ export default function SettingsPanel({ onClose, onOpenFocusAssist }: SettingsPa
       </div>
 
       <div className="settings-panel__body">
+        {sessionFolder && (
+          <div className="settings-panel__session-size">
+            <span className="settings-panel__session-size-label">Current session</span>
+            <span className="settings-panel__session-size-value">
+              {formatBytes(sessionSizeBytes)}
+              {frameCount > 0 && ` · ${frameCount.toLocaleString()} frames`}
+            </span>
+          </div>
+        )}
+
         <label className="settings-panel__row">
           <span>Capture interval (seconds)</span>
           <input
@@ -49,15 +111,27 @@ export default function SettingsPanel({ onClose, onOpenFocusAssist }: SettingsPa
           />
         </label>
 
-        <label className="settings-panel__row">
+        <div className="settings-panel__row">
           <span>Output folder</span>
-          <input
-            type="text"
-            value={String(settings.outputFolder ?? '')}
-            onChange={(e) => update('outputFolder', e.target.value)}
-            placeholder="C:\Pictures\TimeLapser"
-          />
-        </label>
+          <div className="settings-panel__output-folder">
+            <input
+              type="text"
+              value={String(settings.outputFolder ?? '')}
+              onChange={(e) => update('outputFolder', e.target.value)}
+              placeholder="C:\Pictures\TimeLapser"
+            />
+            <button
+              type="button"
+              className="settings-panel__browse"
+              onClick={async () => {
+                const { path: chosen } = await window.timelapser.showOutputFolderPicker();
+                if (chosen) update('outputFolder', chosen);
+              }}
+            >
+              Browse…
+            </button>
+          </div>
+        </div>
 
         <label className="settings-panel__row">
           <span>Capture source</span>
@@ -88,22 +162,23 @@ export default function SettingsPanel({ onClose, onOpenFocusAssist }: SettingsPa
 
         {String(settings.source) === 'region' && (
           <div className="settings-panel__region">
-            <span className="settings-panel__label">Region (x, y, width, height)</span>
-            <div className="settings-panel__row settings-panel__row--inline">
-              {(['x', 'y', 'width', 'height'] as const).map((key) => {
-                const r = (settings.region as { x: number; y: number; width: number; height: number }) || { x: 0, y: 0, width: 800, height: 600 };
-                return (
-                  <input
-                    key={key}
-                    type="number"
-                    placeholder={key}
-                    value={r[key] ?? ''}
-                    onChange={(e) => update('region', { ...r, [key]: parseInt(e.target.value, 10) || 0 })}
-                  />
-                );
-              })}
-            </div>
-            <p className="settings-panel__hint">Capture from primary screen; crop to this rectangle.</p>
+            <span className="settings-panel__label">Capture area</span>
+            <p className="settings-panel__hint">A fullscreen overlay will appear. Click and drag on your screen to draw the capture rectangle (Esc to cancel).</p>
+            <button
+              type="button"
+              className="settings-panel__btn settings-panel__btn--primary"
+              onClick={() => window.timelapser.startRegionPick()}
+            >
+              Select area on screen…
+            </button>
+            {(settings.region as { x: number; y: number; width: number; height: number } | null) && (
+              <p className="settings-panel__region-value">
+                Current: {(settings.region as { x: number; y: number; width: number; height: number }).x},{' '}
+                {(settings.region as { x: number; y: number; width: number; height: number }).y},{' '}
+                {(settings.region as { x: number; y: number; width: number; height: number }).width}×
+                {(settings.region as { x: number; y: number; width: number; height: number }).height}
+              </p>
+            )}
           </div>
         )}
 
@@ -170,6 +245,20 @@ export default function SettingsPanel({ onClose, onOpenFocusAssist }: SettingsPa
           />
           <span>Fewer interruptions during recording</span>
         </label>
+
+        <div className="settings-panel__row">
+          <span>Overlay transparency — {Math.round((Number(settings.overlayOpacity) ?? 1) * 100)}%</span>
+          <input
+            type="range"
+            min={10}
+            max={100}
+            step={5}
+            value={Math.round((Number(settings.overlayOpacity) ?? 1) * 100)}
+            onChange={(e) => update('overlayOpacity', parseInt(e.target.value, 10) / 100)}
+            className="settings-panel__slider"
+          />
+        </div>
+
         <button
           type="button"
           className="settings-panel__link"

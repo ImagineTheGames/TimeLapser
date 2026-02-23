@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import './App.css';
 import Overlay from './components/Overlay';
 import SettingsPanel from './components/SettingsPanel';
 import ExportDialog from './components/ExportDialog';
@@ -13,6 +14,7 @@ export default function App() {
   });
   const [showExport, setShowExport] = useState(false);
   const [exportSessionFolder, setExportSessionFolder] = useState<string | null>(null);
+  const [sessionSizeBytes, setSessionSizeBytes] = useState<number>(0);
 
   const refreshState = useCallback(() => {
     window.timelapser.getState().then(setState);
@@ -23,6 +25,27 @@ export default function App() {
     const t = setInterval(refreshState, 1000);
     return () => clearInterval(t);
   }, [refreshState]);
+
+  useEffect(() => {
+    if (!state.sessionFolder || (state.state !== 'recording' && state.state !== 'paused')) {
+      setSessionSizeBytes(0);
+      return;
+    }
+    const load = () => window.timelapser.getSessionSize(state.sessionFolder!).then((r) => setSessionSizeBytes(r.bytes));
+    load();
+    const t = setInterval(load, 2000);
+    return () => clearInterval(t);
+  }, [state.sessionFolder, state.state]);
+
+  useEffect(() => {
+    if (showExport) {
+      window.timelapser?.setOverlayHeight?.(720);
+    } else if (expanded) {
+      window.timelapser?.setOverlayExpanded?.(true);
+    } else {
+      window.timelapser?.setOverlayExpanded?.(false);
+    }
+  }, [expanded, showExport]);
 
   const handleStart = (newSession: boolean) => {
     window.timelapser.startRecording(newSession).then((r) => {
@@ -44,7 +67,8 @@ export default function App() {
   const handleStop = () => {
     window.timelapser.stopRecording().then((r) => {
       refreshState();
-      if (r.wasRecording && r.sessionFolder) {
+      const frames = r.frameCount ?? 0;
+      if (r.wasRecording && r.sessionFolder && frames >= 2) {
         setExportSessionFolder(r.sessionFolder);
         setShowExport(true);
       }
@@ -52,30 +76,58 @@ export default function App() {
   };
 
   const openExport = () => {
-    setExportSessionFolder(state.sessionFolder);
-    setShowExport(true);
+    const folder = state.state === 'idle' ? state.lastSessionFolder : state.sessionFolder;
+    if (folder) {
+      setExportSessionFolder(folder);
+      setShowExport(true);
+    }
   };
 
   return (
     <div className="app">
-      <Overlay
-        state={state.state}
-        frameCount={state.frameCount}
-        lastSessionFolder={state.lastSessionFolder}
-        expanded={expanded}
-        onToggleExpand={() => setExpanded(!expanded)}
-        onStartNew={startNewSession}
-        onStartContinue={continueSession}
-        onPause={handlePause}
-        onResume={handleResume}
-        onStop={handleStop}
-        onOpenExport={openExport}
-        onOpenSettings={() => setExpanded(true)}
-      />
-      {expanded && (
-        <SettingsPanel
-          onClose={() => setExpanded(false)}
-          onOpenFocusAssist={() => window.timelapser.openFocusAssist()}
+      {expanded ? (
+        <div className="app__expanded">
+          <div className="app__panel-wrap">
+            <SettingsPanel
+              sessionFolder={state.sessionFolder}
+              frameCount={state.frameCount}
+              onClose={() => setExpanded(false)}
+              onOpenFocusAssist={() => window.timelapser.openFocusAssist()}
+              inline
+            />
+          </div>
+          <div className="app__gap" />
+          <div className="app__bar-wrap">
+            <Overlay
+              state={state.state}
+              frameCount={state.frameCount}
+              sessionSizeBytes={sessionSizeBytes}
+              lastSessionFolder={state.lastSessionFolder}
+              expanded={expanded}
+              onStartNew={startNewSession}
+              onStartContinue={continueSession}
+              onPause={handlePause}
+              onResume={handleResume}
+              onStop={handleStop}
+              onOpenExport={openExport}
+              onOpenSettings={() => setExpanded(!expanded)}
+            />
+          </div>
+        </div>
+      ) : (
+        <Overlay
+          state={state.state}
+          frameCount={state.frameCount}
+          sessionSizeBytes={sessionSizeBytes}
+          lastSessionFolder={state.lastSessionFolder}
+          expanded={expanded}
+          onStartNew={startNewSession}
+          onStartContinue={continueSession}
+          onPause={handlePause}
+          onResume={handleResume}
+          onStop={handleStop}
+          onOpenExport={openExport}
+          onOpenSettings={() => setExpanded(!expanded)}
         />
       )}
       {showExport && exportSessionFolder && (

@@ -1,9 +1,7 @@
 .settings-panel {
   position: fixed;
-  top: 70px;
-  right: 12px;
   width: 380px;
-  max-height: calc(100vh - 90px);
+  max-height: calc(100vh - 100px);
   overflow: auto;
   background: rgba(15, 23, 42, 0.96);
   border-radius: 12px;
@@ -11,6 +9,12 @@
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
   backdrop-filter: blur(12px);
   z-index: 10;
+}
+
+.settings-panel--inline {
+  position: relative;
+  max-height: calc(100vh - 24px);
+  flex-shrink: 0;
 }
 
 .settings-panel__header {
@@ -43,6 +47,30 @@
   padding: 16px;
 }
 
+.settings-panel__session-size {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  background: rgba(30, 41, 59, 0.6);
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.15);
+}
+
+.settings-panel__session-size-label {
+  font-size: 11px;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.settings-panel__session-size-value {
+  font-size: 15px;
+  font-weight: 600;
+  color: #e2e8f0;
+}
+
 .settings-panel__row {
   display: flex;
   flex-direction: column;
@@ -63,6 +91,34 @@
   border: 1px solid rgba(148, 163, 184, 0.3);
   background: rgba(30, 41, 59, 0.8);
   color: #e2e8f0;
+}
+
+.settings-panel__slider {
+  width: 100%;
+  height: 8px;
+  accent-color: #3b82f6;
+}
+
+.settings-panel__output-folder {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.settings-panel__output-folder input {
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-panel__browse {
+  flex-shrink: 0;
+  padding: 8px 12px;
+  background: rgba(148, 163, 184, 0.2);
+  color: #e2e8f0;
+}
+
+.settings-panel__browse:hover {
+  background: rgba(148, 163, 184, 0.35);
 }
 
 .settings-panel__row--check {
@@ -105,6 +161,40 @@
 
 .settings-panel__region {
   margin-bottom: 14px;
+}
+
+.settings-panel__region .settings-panel__hint {
+  margin-bottom: 10px;
+}
+
+.settings-panel__region-value {
+  font-size: 12px;
+  color: #94a3b8;
+  margin-top: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-panel__btn {
+  padding: 10px 16px;
+  border-radius: 8px;
+  font-weight: 500;
+  border: none;
+  cursor: pointer;
+  background: rgba(148, 163, 184, 0.2);
+  color: #e2e8f0;
+}
+
+.settings-panel__btn:hover {
+  background: rgba(148, 163, 184, 0.35);
+}
+
+.settings-panel__btn--primary {
+  background: #3b82f6;
+  color: #fff;
+}
+
+.settings-panel__btn--primary:hover {
+  background: #2563eb;
 }
 
 .settings-panel__label {
