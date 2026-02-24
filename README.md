@@ -19,6 +19,10 @@ _Add your own screenshots to the `screenshots/` folder and they will appear here
 - **Notifications**: Option to open Windows Focus assist to reduce interruptions during recording.
 - **Export**: Convert any session to video (MP4, WebM, or MOV) or **GIF**. Choose from a **session selector** (all sessions in the output folder). Each export target has its own **video format** (MP4/WebM/MOV) or can be **GIF** with aspect ratio (16:9 or 9:16), max dimension (480/720/1080/Full), quality, FPS, and max file size. Use **presets** for Instagram Reels/Stories, YouTube/Shorts, TikTok, and Facebook Reels/Stories, or **Custom** resolution/FPS. Add **multiple export targets** in one go. Video options: **crop to fit** aspect per preset, **speed up to fit** platform max duration, **aspect ratio preview** (9:16 or 16:9), optional background music and fade in/out, quality and max file size.
 
+## Install
+
+**Easiest:** Download the latest installer or portable build from the [Releases](https://github.com/ImagineTheGames/TimeLapser/releases) page. No Node.js or build step required.
+
 ## Requirements
 
 - **Windows** (tested on 10/11)
