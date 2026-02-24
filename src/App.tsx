@@ -77,10 +77,8 @@ export default function App() {
 
   const openExport = () => {
     const folder = state.state === 'idle' ? state.lastSessionFolder : state.sessionFolder;
-    if (folder) {
-      setExportSessionFolder(folder);
-      setShowExport(true);
-    }
+    setExportSessionFolder(folder ?? null);
+    setShowExport(true);
   };
 
   return (
@@ -130,7 +128,7 @@ export default function App() {
           onOpenSettings={() => setExpanded(!expanded)}
         />
       )}
-      {showExport && exportSessionFolder && (
+      {showExport && (
         <ExportDialog
           sessionFolder={exportSessionFolder}
           onClose={() => {

@@ -106,6 +106,31 @@
   margin-top: 4px;
 }
 
+.export-dialog__hint-inline {
+  font-size: 11px;
+  color: #64748b;
+  margin-top: 2px;
+}
+
+.export-dialog__slider-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.export-dialog__slider {
+  flex: 1;
+  min-width: 0;
+  height: 6px;
+  accent-color: #3b82f6;
+}
+
+.export-dialog__slider-label {
+  font-size: 11px;
+  color: #64748b;
+  flex-shrink: 0;
+}
+
 .export-dialog__preview {
   display: flex;
   flex-direction: column;
@@ -122,7 +147,8 @@
 
 .export-dialog__preview--with-image {
   padding: 0;
-  width: 100%;
+  /* width/height set inline from preset so 9:16 is portrait, 16:9 is landscape */
+  flex-shrink: 0;
 }
 
 .export-dialog__preview--with-image .export-dialog__preview-label,

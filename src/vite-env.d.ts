@@ -58,6 +58,8 @@ interface ExportVideoArgs {
   cropToFit?: boolean;
   /** Cap output file size (e.g. 9.9*1024*1024 for Discord). May skip frames if needed. */
   maxFileSizeBytes?: number;
+  /** Quality 0–100 (higher = less compression, larger file). Used when no size cap; affects CRF. */
+  quality?: number;
   audioPath?: string | null;
   fadeInSeconds?: number;
   fadeOutSeconds?: number;

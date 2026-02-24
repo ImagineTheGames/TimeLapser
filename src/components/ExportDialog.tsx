@@ -70,13 +70,13 @@ export const SOCIAL_PRESETS = [
 ] as const;
 
 interface ExportDialogProps {
-  sessionFolder: string;
+  sessionFolder: string | null;
   onClose: () => void;
 }
 
 export default function ExportDialog({ sessionFolder: initialSessionFolder, onClose }: ExportDialogProps) {
   const [sessions, setSessions] = useState<Array<{ path: string; name: string }>>([]);
-  const [selectedSessionFolder, setSelectedSessionFolder] = useState(initialSessionFolder);
+  const [selectedSessionFolder, setSelectedSessionFolder] = useState<string>(initialSessionFolder ?? '');
   const [platformId, setPlatformId] = useState<string>(SOCIAL_PRESETS[0].id);
   const [format, setFormat] = useState<'mp4' | 'webm' | 'mov'>('mp4');
   const [speedToFit, setSpeedToFit] = useState(true);
@@ -91,18 +91,27 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
   const [frameCount, setFrameCount] = useState(0);
   const [firstFrameDataUrl, setFirstFrameDataUrl] = useState<string | null>(null);
   const [cropToFit, setCropToFit] = useState(true);
-  const [capAtDiscord, setCapAtDiscord] = useState(false);
+  /** Max file size in MB, or null for no limit. */
+  const [maxFileSizeMb, setMaxFileSizeMb] = useState<number | null>(null);
+  /** Quality 0–100 (higher = less compression, larger file). */
+  const [quality, setQuality] = useState(70);
 
   const [targets, setTargets] = useState<Array<{ platformId: string; outputPath: string }>>([
     { platformId: SOCIAL_PRESETS[0].id, outputPath: '' },
   ]);
 
   useEffect(() => {
-    window.timelapser.getSessionList().then(setSessions);
+    window.timelapser.getSessionList().then((list) => {
+      setSessions(list);
+      setSelectedSessionFolder((prev) => {
+        if (initialSessionFolder) return initialSessionFolder;
+        return list.length > 0 ? list[0].path : prev;
+      });
+    });
   }, []);
 
   useEffect(() => {
-    setSelectedSessionFolder(initialSessionFolder);
+    if (initialSessionFolder) setSelectedSessionFolder(initialSessionFolder);
   }, [initialSessionFolder]);
 
   useEffect(() => {
@@ -115,6 +124,12 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
 
   const previewPreset = SOCIAL_PRESETS.find((p) => p.id === platformId) ?? SOCIAL_PRESETS[0];
   const preset = previewPreset;
+
+  /** Preview box size so aspect ratio is correct (9:16 = tall, 16:9 = wide). Max 220px on the longer side. */
+  const previewSize =
+    preset.width >= preset.height
+      ? { width: 220, height: Math.round((preset.height * 220) / preset.width) }
+      : { width: Math.round((preset.width * 220) / preset.height), height: 220 };
 
   /** Returns path with (1), (2), ... before extension so it doesn't overwrite existing. */
   const getNextUniquePath = (basePath: string, existingPaths: string[]): string => {
@@ -200,8 +215,9 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
         fps: p.fps || customFps,
         width: p.width,
         height: p.height,
-        cropToFit: p.aspectRatio === '9:16' ? cropToFit : false,
-        maxFileSizeBytes: capAtDiscord ? Math.round(9.9 * 1024 * 1024) : undefined,
+        cropToFit,
+        maxFileSizeBytes: maxFileSizeMb != null ? Math.round(maxFileSizeMb * 1024 * 1024) : undefined,
+        quality,
         audioPath: audioPath || null,
         fadeInSeconds,
         fadeOutSeconds,
@@ -302,8 +318,8 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
               className={`export-dialog__preview ${firstFrameDataUrl ? 'export-dialog__preview--with-image' : ''}`}
               style={
                 firstFrameDataUrl
-                  ? { aspectRatio: preset.aspectRatio.replace(':', '/'), maxWidth: '100%', maxHeight: 220 }
-                  : { aspectRatio: preset.aspectRatio, maxWidth: '100%', maxHeight: 120 }
+                  ? { width: previewSize.width, height: previewSize.height, minWidth: previewSize.width, minHeight: previewSize.height }
+                  : { aspectRatio: preset.aspectRatio.replace(':', '/'), maxWidth: '100%', maxHeight: 120 }
               }
               title={`Crop: ${preset.width}×${preset.height} (${preset.aspectRatio})`}
             >
@@ -311,7 +327,7 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
                 <img
                   src={firstFrameDataUrl}
                   alt="First frame"
-                  className="export-dialog__preview-img export-dialog__preview-img--cover"
+                  className={`export-dialog__preview-img ${cropToFit ? 'export-dialog__preview-img--cover' : ''}`}
                 />
               ) : null}
               <span className="export-dialog__preview-label">{preset.aspectRatio}</span>
@@ -319,16 +335,14 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
             </div>
           </div>
 
-          {preset.aspectRatio === '9:16' && (
-            <label className="export-dialog__row export-dialog__row--check">
-              <input
-                type="checkbox"
-                checked={cropToFit}
-                onChange={(e) => setCropToFit(e.target.checked)}
-              />
-              <span>Crop to fit (no squish) — same crop for every frame</span>
-            </label>
-          )}
+          <label className="export-dialog__row export-dialog__row--check">
+            <input
+              type="checkbox"
+              checked={cropToFit}
+              onChange={(e) => setCropToFit(e.target.checked)}
+            />
+            <span>Crop to fit resolution (no squish) — same crop for every frame</span>
+          </label>
 
           <label className="export-dialog__row export-dialog__row--check">
             <input
@@ -339,14 +353,45 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
             <span>Speed up to fit platform max duration</span>
           </label>
 
-          <label className="export-dialog__row export-dialog__row--check">
-            <input
-              type="checkbox"
-              checked={capAtDiscord}
-              onChange={(e) => setCapAtDiscord(e.target.checked)}
-            />
-            <span>Cap at 9.9 MB (Discord) — reduces bitrate or skips frames if needed</span>
-          </label>
+          <div className="export-dialog__row">
+            <span>Max file size</span>
+            <select
+              value={maxFileSizeMb != null ? String(maxFileSizeMb) : 'none'}
+              onChange={(e) => {
+                const v = e.target.value;
+                setMaxFileSizeMb(v === 'none' ? null : parseFloat(v));
+              }}
+            >
+              <option value="none">No limit</option>
+              <option value="5">5 MB</option>
+              <option value="9.9">9.9 MB (Discord)</option>
+              <option value="25">25 MB</option>
+              <option value="50">50 MB</option>
+              <option value="100">100 MB</option>
+            </select>
+            <span className="export-dialog__hint-inline">When set, bitrate is reduced or frames skipped to fit.</span>
+          </div>
+
+          <div className="export-dialog__row">
+            <span>Compression / quality</span>
+            <div className="export-dialog__slider-row">
+              <span className="export-dialog__slider-label">Smaller file</span>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                value={quality}
+                onChange={(e) => setQuality(parseInt(e.target.value, 10))}
+                className="export-dialog__slider"
+              />
+              <span className="export-dialog__slider-label">Larger file</span>
+            </div>
+            <span className="export-dialog__hint-inline">
+              {maxFileSizeMb != null
+                ? 'Quality affects VP9 CRF when capping size; H.264 uses target bitrate.'
+                : 'Higher = better quality (lower CRF). Lower = more compression.'}
+            </span>
+          </div>
 
           <div className="export-dialog__row">
             <span>Output FPS (playback)</span>

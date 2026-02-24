@@ -89,16 +89,14 @@ export default function Overlay({
             >
               ⚙
             </button>
-            {lastSessionFolder && (
-              <button
-                type="button"
-                className="overlay__btn overlay__btn--secondary"
-                onClick={onOpenExport}
-                title="Export to video"
-              >
-                Export
-              </button>
-            )}
+            <button
+              type="button"
+              className="overlay__btn overlay__btn--secondary"
+              onClick={onOpenExport}
+              title="Export to video (choose any session)"
+            >
+              Export
+            </button>
           </>
         )}
 

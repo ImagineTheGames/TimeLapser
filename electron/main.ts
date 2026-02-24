@@ -1,6 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, screen, shell, Tray, nativeImage } from 'electron';
 import path from 'path';
 import fs from 'fs';
+import { execSync } from 'child_process';
 import Store from 'electron-store';
 import screenshot from 'screenshot-desktop';
 import sharp from 'sharp';
@@ -717,9 +718,16 @@ ipcMain.handle('export-video', async (_e, args: {
     sessionFolder, outputPath, maxDurationSeconds, fps, width, height,
     cropToFit = false,
     maxFileSizeBytes,
+    quality = 70,
     audioPath = null, fadeInSeconds = 0, fadeOutSeconds = 0,
     format = 'mp4',
   } = args;
+  /** Map quality 0–100 to CRF (100 = best quality/low CRF, 0 = high compression/high CRF). */
+  const crfFromQuality = (q: number, forWebm: boolean) => {
+    const clamped = Math.max(0, Math.min(100, q));
+    if (forWebm) return Math.round(40 - (clamped / 100) * 22); // 40..18
+    return Math.round(35 - (clamped / 100) * 17); // 35..18 for H.264
+  };
   const ext = format === 'webm' ? 'webm' : format === 'mov' ? 'mov' : 'mp4';
   const destPath = path.extname(outputPath).toLowerCase() !== `.${ext}` ? `${outputPath.replace(/\.[^.]+$/, '')}.${ext}` : outputPath;
   const frames = fs.readdirSync(sessionFolder)
@@ -730,14 +738,28 @@ ipcMain.handle('export-video', async (_e, args: {
       return na - nb;
     });
   if (frames.length === 0) return { ok: false, message: 'No frames in session' };
-  let ffmpegPath: string;
+  let ffmpegPath: string | null = null;
   try {
     ffmpegPath = require('@ffmpeg-installer/ffmpeg').path;
     if (process.resourcesPath && ffmpegPath.includes('app.asar')) {
       ffmpegPath = ffmpegPath.replace('app.asar', 'app.asar.unpacked');
     }
-  } catch (e) {
-    log('FFmpeg installer not found:', (e as Error).message);
+    if (!fs.existsSync(ffmpegPath)) ffmpegPath = null;
+  } catch {
+    ffmpegPath = null;
+  }
+  if (!ffmpegPath) {
+    try {
+      const cmd = process.platform === 'win32' ? 'where ffmpeg' : 'which ffmpeg';
+      const out = execSync(cmd, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+      const first = out.split(/\r?\n/)[0]?.trim();
+      if (first && fs.existsSync(first)) ffmpegPath = first;
+    } catch {
+      // ignore
+    }
+  }
+  if (!ffmpegPath) {
+    log('FFmpeg not found: bundled installer missing and not on PATH');
     return { ok: false, message: 'FFmpeg not found. Install from https://ffmpeg.org or run: winget install FFmpeg' };
   }
   const ffmpeg = require('fluent-ffmpeg');
@@ -763,19 +785,21 @@ ipcMain.handle('export-video', async (_e, args: {
     frameStep = Math.min(frameStep, Math.max(1, Math.floor(frames.length / 10)));
   }
   const effectiveDurationSec = frameStep > 1 ? (frames.length / frameStep) / outFps : videoDurationSec;
+  const crfVp9 = crfFromQuality(quality, true);
+  const crfH264 = crfFromQuality(quality, false);
   let videoOpts: string[];
   if (maxFileSizeBytes && maxFileSizeBytes > 0) {
     const targetVideoBytes = maxFileSizeBytes * 0.9;
     const targetKbps = Math.max(300, Math.min(20000, Math.round((targetVideoBytes * 8) / effectiveDurationSec / 1000)));
     if (ext === 'webm') {
-      videoOpts = [`-r ${outFps}`, '-c:v libvpx-vp9', '-pix_fmt yuv420p', `-b:v ${targetKbps}k`, '-crf 31'];
+      videoOpts = [`-r ${outFps}`, '-c:v libvpx-vp9', '-pix_fmt yuv420p', `-b:v ${targetKbps}k`, `-crf ${Math.min(crfVp9, 35)}`];
     } else {
       videoOpts = [`-r ${outFps}`, '-c:v libx264', '-pix_fmt yuv420p', '-movflags +faststart', `-b:v ${targetKbps}k`, `-maxrate ${targetKbps}k`, `-bufsize ${Math.min(2 * targetKbps, 40000)}k`];
     }
   } else {
     videoOpts = ext === 'webm'
-      ? [`-r ${outFps}`, '-c:v libvpx-vp9', '-pix_fmt yuv420p', '-b:v 0', '-crf 30']
-      : [`-r ${outFps}`, '-c:v libx264', '-pix_fmt yuv420p', '-movflags +faststart'];
+      ? [`-r ${outFps}`, '-c:v libvpx-vp9', '-pix_fmt yuv420p', '-b:v 0', `-crf ${crfVp9}`]
+      : [`-r ${outFps}`, '-c:v libx264', '-pix_fmt yuv420p', '-movflags +faststart', `-crf ${crfH264}`];
   }
 
   const hasAudio = audioPath && fs.existsSync(audioPath);
