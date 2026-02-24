@@ -5,6 +5,10 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag to release (e.g. v1.0.0). Leave empty for build-only.'
+        required: false
 
 permissions:
   contents: write
@@ -14,6 +18,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -24,20 +30,45 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build Electron (esbuild) + Vite + electron-builder
-        run: npm run dist:win
+      - name: Build Electron (esbuild) + Vite
+        run: |
+          node scripts/build-electron-esbuild.js
+          npx vite build
+
+      - name: Build Windows installer
+        run: npx electron-builder
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: List release output
+        run: |
+          if (Test-Path release) { Get-ChildItem -Path release -Recurse | Format-Table Name, Length -AutoSize }
+          else { Write-Host "release/ folder not found"; exit 1 }
+
+      - name: Fail if no installer
+        run: |
+          $exe = Get-ChildItem -Path release -Filter "*.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe) { Write-Error "No .exe found in release/"; exit 1 }
+          Write-Host "Found: $($exe.FullName)"
+          Copy-Item -Path $exe.FullName -Destination release/TimeLapser-Setup.exe -Force
+          Get-ChildItem -Path release -Filter "*.exe" -Recurse | ForEach-Object { $_.FullName }
 
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
           name: TimeLapser-Windows-${{ github.sha }}
-          path: release/*.exe
+          path: release/
 
       - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
+        id: gh_release
+        if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name != '')
         uses: softprops/action-gh-release@v2
         with:
-          files: release/*.exe
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name || github.ref_name }}
+          name: Release ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name || github.ref_name }}
+          files: release/TimeLapser-Setup.exe
           generate_release_notes: true
+          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
