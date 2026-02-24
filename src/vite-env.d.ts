@@ -50,7 +50,7 @@ interface ExportVideoArgs {
   sessionFolder: string;
   outputPath: string;
   platform: string;
-  format?: 'mp4' | 'webm' | 'mov';
+  format?: 'mp4' | 'webm' | 'mov' | 'gif';
   maxDurationSeconds: number;
   fps: number;
   width: number;
@@ -63,6 +63,10 @@ interface ExportVideoArgs {
   audioPath?: string | null;
   fadeInSeconds?: number;
   fadeOutSeconds?: number;
+  /** GIF: max dimension (480, 720, 1080) or 'full'. */
+  gifMaxDimension?: number | 'full';
+  /** GIF: quality 0–100 (affects scale/size). */
+  gifQuality?: number;
 }
 
 declare global {

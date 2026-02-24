@@ -4,6 +4,7 @@ import './ExportDialog.css';
 const ENCODING_BY_FORMAT: Record<string, string> = { mp4: 'H.264', mov: 'H.264', webm: 'VP9' };
 
 export const CUSTOM_PRESET_ID = 'custom';
+export const GIF_PRESET_ID = 'gif';
 
 export type Preset = {
   id: string;
@@ -25,6 +26,24 @@ export const SOCIAL_PRESETS: Preset[] = [
   { id: 'facebook_stories', name: 'Facebook Stories', maxDurationSeconds: 60, width: 1440, height: 2560, aspectRatio: '9:16', fps: 30 },
 ];
 
+/** Dimensions for GIF by max dimension and aspect ratio. */
+const GIF_DIMENSIONS_9_16: Record<number | 'full', { width: number; height: number }> = {
+  480: { width: 480, height: 854 },
+  720: { width: 720, height: 1280 },
+  1080: { width: 1080, height: 1920 },
+  full: { width: 1080, height: 1920 },
+};
+const GIF_DIMENSIONS_16_9: Record<number | 'full', { width: number; height: number }> = {
+  480: { width: 854, height: 480 },
+  720: { width: 1280, height: 720 },
+  1080: { width: 1920, height: 1080 },
+  full: { width: 1920, height: 1080 },
+};
+function getGifDimensions(maxDim: GifMaxDimension, aspectRatio: '9:16' | '16:9'): { width: number; height: number } {
+  const map = aspectRatio === '16:9' ? GIF_DIMENSIONS_16_9 : GIF_DIMENSIONS_9_16;
+  return map[maxDim ?? 720] ?? map[720];
+}
+
 const DEFAULT_CUSTOM_PRESET = { width: 1920, height: 1080, fps: 30, maxDurationSeconds: 0 };
 
 const DEFAULT_TARGET_OPTIONS = {
@@ -34,10 +53,20 @@ const DEFAULT_TARGET_OPTIONS = {
   maxFileSizeMb: null as number | null,
 };
 
+export type GifMaxDimension = 480 | 720 | 1080 | 'full';
+
 export interface ExportTarget {
   platformId: string;
   outputPath: string;
+  /** Video format for this target when platformId is not GIF. */
+  videoFormat?: 'mp4' | 'webm' | 'mov';
   customPreset?: { width: number; height: number; fps: number; maxDurationSeconds: number };
+  /** GIF: max dimension (480, 720, 1080, full). */
+  gifMaxDimension?: GifMaxDimension;
+  /** GIF: aspect ratio 16:9 or 9:16. */
+  gifAspectRatio?: '16:9' | '9:16';
+  /** GIF: quality 0–100 (affects scale/size). */
+  gifQuality?: number;
   /** Override FPS for any platform; when undefined, use preset FPS. */
   fpsOverride?: number;
   /** When set (e.g. 60), video length is fixed to this many seconds; FPS is derived. Overrides speed-to-fit and FPS. */
@@ -54,7 +83,16 @@ function getPresetForTarget(t: ExportTarget): Preset {
     const aspectRatio = width >= height ? '16:9' : '9:16';
     return { id: CUSTOM_PRESET_ID, name: 'Custom', maxDurationSeconds, width, height, aspectRatio, fps };
   }
+  if (t.platformId === GIF_PRESET_ID) {
+    const aspect = t.gifAspectRatio ?? '9:16';
+    const dim = getGifDimensions(t.gifMaxDimension ?? 720, aspect);
+    return { id: GIF_PRESET_ID, name: 'GIF', maxDurationSeconds: 0, width: dim.width, height: dim.height, aspectRatio: aspect, fps: 10 };
+  }
   return SOCIAL_PRESETS.find((p) => p.id === t.platformId) ?? SOCIAL_PRESETS[0];
+}
+
+function getFormatForTarget(t: ExportTarget): 'mp4' | 'webm' | 'mov' | 'gif' {
+  return t.platformId === GIF_PRESET_ID ? 'gif' : (t.videoFormat ?? 'mp4');
 }
 
 function getEffectiveFpsForTarget(t: ExportTarget, frameCount: number): number {
@@ -75,12 +113,17 @@ function getDurationSecForTarget(t: ExportTarget, frameCount: number): number {
   return frameCount / getEffectiveFpsForTarget(t, frameCount);
 }
 
-function getEstimatedFileSizeMbForTarget(
-  t: ExportTarget,
-  frameCount: number,
-  format: 'mp4' | 'webm' | 'mov'
-): number | null {
+function getEstimatedFileSizeMbForTarget(t: ExportTarget, frameCount: number): number | null {
   if (frameCount <= 0) return null;
+  const format = getFormatForTarget(t);
+  if (format === 'gif') {
+    const durationSec = getDurationSecForTarget(t, frameCount);
+    const preset = getPresetForTarget(t);
+    const pixels = preset.width * preset.height;
+    const refPixels = 1920 * 1080;
+    const qualityFactor = (t.gifQuality ?? 70) / 100;
+    return (durationSec * 0.5 * (pixels / refPixels) * (0.3 + 0.7 * qualityFactor)); // rough estimate for GIF
+  }
   const durationSec = getDurationSecForTarget(t, frameCount);
   const preset = getPresetForTarget(t);
   const quality = t.quality ?? DEFAULT_TARGET_OPTIONS.quality;
@@ -103,7 +146,6 @@ interface ExportDialogProps {
 export default function ExportDialog({ sessionFolder: initialSessionFolder, onClose }: ExportDialogProps) {
   const [sessions, setSessions] = useState<Array<{ path: string; name: string }>>([]);
   const [selectedSessionFolder, setSelectedSessionFolder] = useState<string>(initialSessionFolder ?? '');
-  const [format, setFormat] = useState<'mp4' | 'webm' | 'mov'>('mp4');
   const [outputPath, setOutputPath] = useState('');
   const [audioPath, setAudioPath] = useState<string | null>(null);
   const [fadeInSeconds, setFadeInSeconds] = useState(0);
@@ -120,6 +162,7 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
     {
       platformId: SOCIAL_PRESETS[0].id,
       outputPath: '',
+      videoFormat: 'mp4',
       ...DEFAULT_TARGET_OPTIONS,
     },
   ]);
@@ -142,7 +185,12 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
     if (!selectedSessionFolder) return;
     window.timelapser.getDefaultExportPath(selectedSessionFolder).then((p) => {
       setOutputPath(p);
-      setTargets((t) => (t.length === 1 && !t[0].outputPath ? [{ ...t[0], outputPath: p }] : t));
+      setTargets((t) => {
+        if (t.length !== 1 || t[0].outputPath) return t;
+        const fmt = getFormatForTarget(t[0]);
+        const pathWithExt = fmt === 'gif' ? p.replace(/\.(mp4|webm|mov)$/i, '.gif') : p;
+        return [{ ...t[0], outputPath: pathWithExt }];
+      });
     });
   }, [selectedSessionFolder]);
 
@@ -155,24 +203,28 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
       : { width: Math.round((previewWidth * 220) / previewHeight), height: 220 };
 
   /** Returns path with (1), (2), ... before extension so it doesn't overwrite existing. */
-  const getNextUniquePath = (basePath: string, existingPaths: string[]): string => {
-    const ext = format === 'webm' ? '.webm' : format === 'mov' ? '.mov' : '.mp4';
+  const getNextUniquePath = (basePath: string, existingPaths: string[], ext: string): string => {
     const baseNoSuffix = (basePath.replace(/\.[^.]+$/, '') || 'export').replace(/\s*\(\d+\)$/, '');
+    const dotExt = ext.startsWith('.') ? ext : `.${ext}`;
     for (let n = 1; n <= 999; n++) {
-      const candidate = `${baseNoSuffix} (${n})${ext}`;
+      const candidate = `${baseNoSuffix} (${n})${dotExt}`;
       if (!existingPaths.includes(candidate)) return candidate;
     }
-    return `${baseNoSuffix} (${Date.now()})${ext}`;
+    return `${baseNoSuffix} (${Date.now()})${dotExt}`;
   };
 
   const addTarget = () => {
     const last = targets[targets.length - 1];
+    const newPlatformId = last?.platformId ?? SOCIAL_PRESETS[0].id;
+    const newFormat = newPlatformId === GIF_PRESET_ID ? 'gif' : (last?.videoFormat ?? 'mp4');
     const existingPaths = targets.map((t) => t.outputPath).filter(Boolean) as string[];
-    const newPath = getNextUniquePath(last?.outputPath || outputPath || 'export.mp4', existingPaths);
+    const newPath = getNextUniquePath(last?.outputPath || outputPath || 'export.mp4', existingPaths, newFormat);
     const newTarget: ExportTarget = {
-      platformId: last?.platformId ?? SOCIAL_PRESETS[0].id,
+      platformId: newPlatformId,
       outputPath: newPath,
-      ...(last?.platformId === CUSTOM_PRESET_ID && last?.customPreset ? { customPreset: { ...last.customPreset } } : {}),
+      videoFormat: newPlatformId === GIF_PRESET_ID ? undefined : (last?.videoFormat ?? 'mp4'),
+      ...(newPlatformId === GIF_PRESET_ID ? { gifMaxDimension: last?.gifMaxDimension ?? 720, gifAspectRatio: last?.gifAspectRatio ?? '9:16', gifQuality: last?.gifQuality ?? 70 } : {}),
+      ...(newPlatformId === CUSTOM_PRESET_ID && last?.customPreset ? { customPreset: { ...last.customPreset } } : {}),
       fpsOverride: last?.fpsOverride,
       targetDurationSeconds: last?.targetDurationSeconds ?? undefined,
       speedToFit: last?.speedToFit ?? DEFAULT_TARGET_OPTIONS.speedToFit,
@@ -186,13 +238,18 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
   const copyFromPrevious = (i: number) => {
     if (i <= 0) return;
     const prev = targets[i - 1];
+    const ext = getFormatForTarget(prev);
     const existingPaths = targets.map((t) => t.outputPath).filter(Boolean) as string[];
-    const newPath = getNextUniquePath(prev.outputPath || outputPath || 'export.mp4', existingPaths);
+    const newPath = getNextUniquePath(prev.outputPath || outputPath || 'export.mp4', existingPaths, ext);
     setTargets(targets.map((t, idx) => {
       if (idx !== i) return t;
       return {
         ...t,
         platformId: prev.platformId,
+        videoFormat: prev.videoFormat,
+        gifMaxDimension: prev.gifMaxDimension,
+        gifAspectRatio: prev.gifAspectRatio,
+        gifQuality: prev.gifQuality,
         customPreset: prev.customPreset ? { ...prev.customPreset } : undefined,
         fpsOverride: prev.fpsOverride,
         targetDurationSeconds: prev.targetDurationSeconds ?? undefined,
@@ -216,6 +273,23 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
       if (upd.platformId === CUSTOM_PRESET_ID && !next.customPreset) next.customPreset = { ...DEFAULT_CUSTOM_PRESET };
       if (upd.platformId != null && upd.platformId !== CUSTOM_PRESET_ID) next.customPreset = undefined;
       if (upd.platformId != null) next.fpsOverride = undefined;
+      const basePath = (next.outputPath || outputPath || 'export.mp4').replace(/\.(mp4|webm|mov|gif)$/i, '') || 'export';
+      if (upd.platformId === GIF_PRESET_ID) {
+        next.videoFormat = undefined;
+        if (next.gifMaxDimension == null) next.gifMaxDimension = 720;
+        if (next.gifAspectRatio == null) next.gifAspectRatio = '9:16';
+        if (next.gifQuality == null) next.gifQuality = 70;
+        next.outputPath = basePath + '.gif';
+      } else if (upd.platformId != null && t.platformId === GIF_PRESET_ID) {
+        next.gifMaxDimension = undefined;
+        next.gifAspectRatio = undefined;
+        next.gifQuality = undefined;
+        next.videoFormat = next.videoFormat ?? 'mp4';
+        next.outputPath = basePath + '.' + (next.videoFormat ?? 'mp4');
+      }
+      if (upd.videoFormat != null && next.platformId !== GIF_PRESET_ID) {
+        next.outputPath = basePath + '.' + upd.videoFormat;
+      }
       return next;
     }));
   };
@@ -251,15 +325,15 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
     setExporting(true);
     setMessage(null);
     setExportProgress({ current: 0, total: toExport.length });
-    const ext = format === 'webm' ? 'webm' : format === 'mov' ? 'mov' : 'mp4';
     const okPaths: string[] = [];
     let errMsg: string | null = null;
     let done = 0;
     for (let i = 0; i < targets.length; i++) {
       const t = targets[i];
       if (!t.outputPath?.trim()) continue;
-      setExportProgress({ current: done + 1, total: toExport.length });
-      const basePath = t.outputPath.replace(/\.(mp4|webm|mov)$/i, '');
+      const format = getFormatForTarget(t);
+      const ext = format;
+      const basePath = t.outputPath.replace(/\.(mp4|webm|mov|gif)$/i, '');
       const finalPath = t.outputPath.toLowerCase().endsWith(`.${ext}`) ? t.outputPath : `${basePath}.${ext}`;
       const p = getPresetForTarget(t);
       const effFps = getEffectiveFpsForTarget(t, frameCount);
@@ -277,11 +351,13 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
         width: p.width,
         height: p.height,
         cropToFit,
-        maxFileSizeBytes: maxFileSizeMb != null ? Math.round(maxFileSizeMb * 1024 * 1024) : undefined,
-        quality,
-        audioPath: audioPath || null,
-        fadeInSeconds,
-        fadeOutSeconds,
+        maxFileSizeBytes: maxFileSizeMb != null && maxFileSizeMb > 0 ? Math.round(maxFileSizeMb * 1024 * 1024) : undefined,
+        quality: format === 'gif' ? (t.gifQuality ?? 70) : quality,
+        audioPath: format === 'gif' ? null : (audioPath || null),
+        fadeInSeconds: format === 'gif' ? 0 : fadeInSeconds,
+        fadeOutSeconds: format === 'gif' ? 0 : fadeOutSeconds,
+        gifMaxDimension: format === 'gif' ? (t.gifMaxDimension === 'full' ? 'full' : t.gifMaxDimension ?? 720) : undefined,
+        gifQuality: format === 'gif' ? (t.gifQuality ?? 70) : undefined,
       });
       if (result.ok && result.path) okPaths.push(result.path);
       else if (!result.ok) errMsg = result.message || 'Export failed';
@@ -338,18 +414,6 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
               </select>
             </label>
           )}
-
-          <div className="export-dialog__row">
-            <span>Video format</span>
-            <select
-              value={format}
-              onChange={(e) => setFormat(e.target.value as 'mp4' | 'webm' | 'mov')}
-            >
-              <option value="mp4">MP4 (H.264)</option>
-              <option value="webm">WebM (VP9)</option>
-              <option value="mov">MOV (H.264)</option>
-            </select>
-          </div>
 
           <div className="export-dialog__row">
             <span>Aspect ratio preview</span>
@@ -434,8 +498,9 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
             {targets.map((t, i) => {
               const p = getPresetForTarget(t);
               const durationSec = getDurationSecForTarget(t, frameCount);
-              const estimatedMb = getEstimatedFileSizeMbForTarget(t, frameCount, format);
+              const estimatedMb = getEstimatedFileSizeMbForTarget(t, frameCount);
               const displayFps = t.fpsOverride ?? p.fps;
+              const isGif = t.platformId === GIF_PRESET_ID;
               return (
                 <div key={i} className="export-dialog__target-card">
                   <div className="export-dialog__target-card-header">
@@ -449,6 +514,7 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
                           {pres.maxDurationSeconds > 0 ? `, max ${pres.maxDurationSeconds}s` : ''}
                         </option>
                       ))}
+                      <option value={GIF_PRESET_ID}>GIF</option>
                       <option value={CUSTOM_PRESET_ID}>Custom…</option>
                     </select>
                     {i > 0 && (
@@ -462,6 +528,87 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
                       </button>
                     )}
                   </div>
+                  {!isGif && (
+                    <label className="export-dialog__row">
+                      <span>Video format</span>
+                      <select
+                        value={t.videoFormat ?? 'mp4'}
+                        onChange={(e) => updateTarget(i, { videoFormat: e.target.value as 'mp4' | 'webm' | 'mov' })}
+                      >
+                        <option value="mp4">MP4 (H.264)</option>
+                        <option value="webm">WebM (VP9)</option>
+                        <option value="mov">MOV (H.264)</option>
+                      </select>
+                    </label>
+                  )}
+                  {isGif && (
+                    <>
+                      <label className="export-dialog__row">
+                        <span>Aspect ratio</span>
+                        <select
+                          value={t.gifAspectRatio ?? '9:16'}
+                          onChange={(e) => updateTarget(i, { gifAspectRatio: e.target.value as '16:9' | '9:16' })}
+                        >
+                          <option value="9:16">9:16 (portrait)</option>
+                          <option value="16:9">16:9 (landscape)</option>
+                        </select>
+                      </label>
+                      <label className="export-dialog__row">
+                        <span>Max dimension</span>
+                        <select
+                          value={t.gifMaxDimension ?? 720}
+                          onChange={(e) => updateTarget(i, { gifMaxDimension: (e.target.value === 'full' ? 'full' : parseInt(e.target.value, 10)) as GifMaxDimension })}
+                        >
+                          <option value={480}>480px</option>
+                          <option value={720}>720px</option>
+                          <option value={1080}>1080px</option>
+                          <option value="full">Full</option>
+                        </select>
+                      </label>
+                      <div className="export-dialog__row">
+                        <span>Quality</span>
+                        <div className="export-dialog__slider-row">
+                          <span className="export-dialog__slider-label">Smaller file</span>
+                          <input
+                            type="range"
+                            min={0}
+                            max={100}
+                            value={t.gifQuality ?? 70}
+                            onChange={(e) => updateTarget(i, { gifQuality: parseInt(e.target.value, 10) })}
+                            className="export-dialog__slider"
+                          />
+                          <span className="export-dialog__slider-label">Larger file</span>
+                        </div>
+                      </div>
+                      <label className="export-dialog__row">
+                        <span>FPS</span>
+                        <input
+                          type="number"
+                          min={1}
+                          max={30}
+                          value={displayFps}
+                          onChange={(e) => updateTarget(i, { fpsOverride: parseInt(e.target.value, 10) || undefined })}
+                        />
+                      </label>
+                      <div className="export-dialog__row">
+                        <span>Max file size</span>
+                        <select
+                          value={(t.maxFileSizeMb ?? DEFAULT_TARGET_OPTIONS.maxFileSizeMb) != null ? String(t.maxFileSizeMb ?? DEFAULT_TARGET_OPTIONS.maxFileSizeMb) : 'none'}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            updateTarget(i, { maxFileSizeMb: v === 'none' ? null : parseFloat(v) });
+                          }}
+                        >
+                          <option value="none">No limit</option>
+                          <option value="5">5 MB</option>
+                          <option value="9.9">9.9 MB (Discord)</option>
+                          <option value="25">25 MB</option>
+                          <option value="50">50 MB</option>
+                          <option value="100">100 MB</option>
+                        </select>
+                      </div>
+                    </>
+                  )}
                   {t.platformId === CUSTOM_PRESET_ID && t.customPreset && (
                     <div className="export-dialog__custom-preset">
                       <label className="export-dialog__row export-dialog__row--small">
@@ -505,7 +652,7 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
                       </label>
                     </div>
                   )}
-                  {(t.platformId !== CUSTOM_PRESET_ID) && (
+                  {!isGif && (t.platformId !== CUSTOM_PRESET_ID) && (
                     <label className="export-dialog__row">
                       <span>Output FPS</span>
                       <input
@@ -517,69 +664,73 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
                       />
                     </label>
                   )}
-                  <label className="export-dialog__row">
-                    <span>Target video length (s)</span>
-                    <input
-                      type="number"
-                      min={0}
-                      step={0.5}
-                      placeholder="Auto (use FPS or speed to fit)"
-                      value={t.targetDurationSeconds != null && t.targetDurationSeconds > 0 ? t.targetDurationSeconds : ''}
-                      onChange={(e) => {
-                        const v = e.target.value.trim();
-                        updateTarget(i, { targetDurationSeconds: v === '' ? undefined : Math.max(0, parseFloat(v) || 0) });
-                      }}
-                    />
-                    <span className="export-dialog__hint-inline">0 or empty = use FPS or speed to fit.</span>
-                  </label>
-                  <label className="export-dialog__row export-dialog__row--check">
-                    <input
-                      type="checkbox"
-                      checked={t.speedToFit ?? DEFAULT_TARGET_OPTIONS.speedToFit}
-                      onChange={(e) => updateTarget(i, { speedToFit: e.target.checked })}
-                    />
-                    <span>Speed up to fit platform max duration</span>
-                  </label>
-                  <label className="export-dialog__row export-dialog__row--check">
-                    <input
-                      type="checkbox"
-                      checked={t.cropToFit ?? DEFAULT_TARGET_OPTIONS.cropToFit}
-                      onChange={(e) => updateTarget(i, { cropToFit: e.target.checked })}
-                    />
-                    <span>Crop to fit resolution (no squish)</span>
-                  </label>
-                  <div className="export-dialog__row">
-                    <span>Quality</span>
-                    <div className="export-dialog__slider-row">
-                      <span className="export-dialog__slider-label">Smaller</span>
-                      <input
-                        type="range"
-                        min={0}
-                        max={100}
-                        value={t.quality ?? DEFAULT_TARGET_OPTIONS.quality}
-                        onChange={(e) => updateTarget(i, { quality: parseInt(e.target.value, 10) })}
-                        className="export-dialog__slider"
-                      />
-                      <span className="export-dialog__slider-label">Larger</span>
-                    </div>
-                  </div>
-                  <div className="export-dialog__row">
-                    <span>Max file size</span>
-                    <select
-                      value={(t.maxFileSizeMb ?? DEFAULT_TARGET_OPTIONS.maxFileSizeMb) != null ? String(t.maxFileSizeMb ?? DEFAULT_TARGET_OPTIONS.maxFileSizeMb) : 'none'}
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        updateTarget(i, { maxFileSizeMb: v === 'none' ? null : parseFloat(v) });
-                      }}
-                    >
-                      <option value="none">No limit</option>
-                      <option value="5">5 MB</option>
-                      <option value="9.9">9.9 MB (Discord)</option>
-                      <option value="25">25 MB</option>
-                      <option value="50">50 MB</option>
-                      <option value="100">100 MB</option>
-                    </select>
-                  </div>
+                  {!isGif && (
+                    <>
+                      <label className="export-dialog__row">
+                        <span>Target video length (s)</span>
+                        <input
+                          type="number"
+                          min={0}
+                          step={0.5}
+                          placeholder="Auto (use FPS or speed to fit)"
+                          value={t.targetDurationSeconds != null && t.targetDurationSeconds > 0 ? t.targetDurationSeconds : ''}
+                          onChange={(e) => {
+                            const v = e.target.value.trim();
+                            updateTarget(i, { targetDurationSeconds: v === '' ? undefined : Math.max(0, parseFloat(v) || 0) });
+                          }}
+                        />
+                        <span className="export-dialog__hint-inline">0 or empty = use FPS or speed to fit.</span>
+                      </label>
+                      <label className="export-dialog__row export-dialog__row--check">
+                        <input
+                          type="checkbox"
+                          checked={t.speedToFit ?? DEFAULT_TARGET_OPTIONS.speedToFit}
+                          onChange={(e) => updateTarget(i, { speedToFit: e.target.checked })}
+                        />
+                        <span>Speed up to fit platform max duration</span>
+                      </label>
+                      <label className="export-dialog__row export-dialog__row--check">
+                        <input
+                          type="checkbox"
+                          checked={t.cropToFit ?? DEFAULT_TARGET_OPTIONS.cropToFit}
+                          onChange={(e) => updateTarget(i, { cropToFit: e.target.checked })}
+                        />
+                        <span>Crop to fit resolution (no squish)</span>
+                      </label>
+                      <div className="export-dialog__row">
+                        <span>Quality</span>
+                        <div className="export-dialog__slider-row">
+                          <span className="export-dialog__slider-label">Smaller</span>
+                          <input
+                            type="range"
+                            min={0}
+                            max={100}
+                            value={t.quality ?? DEFAULT_TARGET_OPTIONS.quality}
+                            onChange={(e) => updateTarget(i, { quality: parseInt(e.target.value, 10) })}
+                            className="export-dialog__slider"
+                          />
+                          <span className="export-dialog__slider-label">Larger</span>
+                        </div>
+                      </div>
+                      <div className="export-dialog__row">
+                        <span>Max file size</span>
+                        <select
+                          value={(t.maxFileSizeMb ?? DEFAULT_TARGET_OPTIONS.maxFileSizeMb) != null ? String(t.maxFileSizeMb ?? DEFAULT_TARGET_OPTIONS.maxFileSizeMb) : 'none'}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            updateTarget(i, { maxFileSizeMb: v === 'none' ? null : parseFloat(v) });
+                          }}
+                        >
+                          <option value="none">No limit</option>
+                          <option value="5">5 MB</option>
+                          <option value="9.9">9.9 MB (Discord)</option>
+                          <option value="25">25 MB</option>
+                          <option value="50">50 MB</option>
+                          <option value="100">100 MB</option>
+                        </select>
+                      </div>
+                    </>
+                  )}
                   <div className="export-dialog__save-as">
                     <input
                       type="text"
@@ -593,7 +744,8 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
                       type="button"
                       className="export-dialog__btn export-dialog__btn--secondary"
                       onClick={async () => {
-                        const { path: chosen } = await window.timelapser.showExportSavePicker(t.outputPath || outputPath, format);
+                        const targetFormat = getFormatForTarget(t);
+                        const { path: chosen } = await window.timelapser.showExportSavePicker(t.outputPath || outputPath, targetFormat);
                         if (chosen) updateTarget(i, { outputPath: chosen });
                       }}
                     >

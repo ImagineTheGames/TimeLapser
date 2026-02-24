@@ -134,6 +134,14 @@ function ensureOverlayWindow() {
   overlayWindow.webContents.on('did-finish-load', () => {
     log('Overlay finished loading');
   });
+  // Keep app in tray: close button and Alt+F4 hide the overlay instead of destroying it
+  overlayWindow.on('close', (e) => {
+    if (!overlayWindow?.isDestroyed()) {
+      e.preventDefault();
+      overlayWindow.hide();
+      log('Overlay hidden (minimized to tray)');
+    }
+  });
   overlayWindow.on('closed', () => { overlayWindow = null; });
   log('Overlay window created');
   return overlayWindow;
@@ -320,7 +328,7 @@ ipcMain.on('renderer-log', (_e, message: string) => {
 });
 
 ipcMain.on('close-overlay', () => {
-  if (overlayWindow && !overlayWindow.isDestroyed()) overlayWindow.close();
+  if (overlayWindow && !overlayWindow.isDestroyed()) overlayWindow.hide();
 });
 
 /** Virtual screen bounds (union of all displays) for the region picker. */
@@ -686,10 +694,11 @@ ipcMain.handle('show-export-save-picker', async (_e, defaultPath: string, format
   const filters: { name: string; extensions: string[] }[] =
     ext === 'webm' ? [{ name: 'WebM', extensions: ['webm'] }]
     : ext === 'mov' ? [{ name: 'QuickTime', extensions: ['mov'] }]
+    : ext === 'gif' ? [{ name: 'GIF', extensions: ['gif'] }]
     : [{ name: 'MP4', extensions: ['mp4'] }];
   filters.push({ name: 'All files', extensions: ['*'] });
   const result = await dialog.showSaveDialog(win || undefined, {
-    title: 'Save video as',
+    title: ext === 'gif' ? 'Save GIF as' : 'Save video as',
     defaultPath: defaultPath || undefined,
     filters,
   });
@@ -715,7 +724,7 @@ ipcMain.handle('export-video', async (_e, args: {
   sessionFolder: string;
   outputPath: string;
   platform: string;
-  format?: 'mp4' | 'webm' | 'mov';
+  format?: 'mp4' | 'webm' | 'mov' | 'gif';
   maxDurationSeconds: number;
   fps: number;
   width: number;
@@ -725,6 +734,8 @@ ipcMain.handle('export-video', async (_e, args: {
   audioPath?: string | null;
   fadeInSeconds?: number;
   fadeOutSeconds?: number;
+  gifMaxDimension?: number | 'full';
+  gifQuality?: number;
 }) => {
   const {
     sessionFolder, outputPath, maxDurationSeconds, fps, width, height,
@@ -733,14 +744,17 @@ ipcMain.handle('export-video', async (_e, args: {
     quality = 70,
     audioPath = null, fadeInSeconds = 0, fadeOutSeconds = 0,
     format = 'mp4',
+    gifMaxDimension,
+    gifQuality = 70,
   } = args;
+  const isGif = format === 'gif';
   /** Map quality 0–100 to CRF (100 = best quality/low CRF, 0 = high compression/high CRF). */
   const crfFromQuality = (q: number, forWebm: boolean) => {
     const clamped = Math.max(0, Math.min(100, q));
     if (forWebm) return Math.round(40 - (clamped / 100) * 22); // 40..18
     return Math.round(35 - (clamped / 100) * 17); // 35..18 for H.264
   };
-  const ext = format === 'webm' ? 'webm' : format === 'mov' ? 'mov' : 'mp4';
+  const ext = isGif ? 'gif' : format === 'webm' ? 'webm' : format === 'mov' ? 'mov' : 'mp4';
   const destPath = path.extname(outputPath).toLowerCase() !== `.${ext}` ? `${outputPath.replace(/\.[^.]+$/, '')}.${ext}` : outputPath;
   const frames = fs.readdirSync(sessionFolder)
     .filter((f) => /^frame_\d+\.(png|jpg|jpeg)$/i.test(f))
@@ -785,7 +799,7 @@ ipcMain.handle('export-video', async (_e, args: {
   }
   let videoDurationSec = frames.length / outFps;
   let frameStep = 1;
-  if (maxFileSizeBytes && maxFileSizeBytes > 0) {
+  if (!isGif && maxFileSizeBytes && maxFileSizeBytes > 0) {
     const targetVideoBytes = maxFileSizeBytes * 0.9;
     let targetKbps = Math.round((targetVideoBytes * 8) / videoDurationSec / 1000);
     if (targetKbps < 400) {
@@ -795,6 +809,51 @@ ipcMain.handle('export-video', async (_e, args: {
       targetKbps = Math.round((targetVideoBytes * 8) / videoDurationSec / 1000);
     }
     frameStep = Math.min(frameStep, Math.max(1, Math.floor(frames.length / 10)));
+  }
+  if (isGif) {
+    return new Promise((resolve) => {
+      let gifWidth = width;
+      let gifHeight = height;
+      if (typeof gifMaxDimension === 'number') {
+        const maxSide = Math.max(gifWidth, gifHeight);
+        if (maxSide > gifMaxDimension) {
+          const scale = gifMaxDimension / maxSide;
+          gifWidth = Math.max(1, Math.round(gifWidth * scale));
+          gifHeight = Math.max(1, Math.round(gifHeight * scale));
+        }
+      }
+      const scaleFactor = Math.max(0.2, Math.min(1, 0.2 + 0.8 * (gifQuality / 100)));
+      let outW = Math.max(1, Math.round(gifWidth * scaleFactor));
+      let outH = Math.max(1, Math.round(gifHeight * scaleFactor));
+      const numFrames = frameStep > 1 ? Math.ceil(frames.length / frameStep) : frames.length;
+      if (maxFileSizeBytes && maxFileSizeBytes > 0 && numFrames > 0) {
+        const targetBytes = maxFileSizeBytes * 0.9;
+        const bytesPerPixelPerFrame = 1.2;
+        const targetPixels = targetBytes / (numFrames * bytesPerPixelPerFrame);
+        const currentPixels = outW * outH;
+        if (currentPixels > 0 && currentPixels > targetPixels) {
+          const sizeScale = Math.max(0.1, Math.min(1, Math.sqrt(targetPixels / currentPixels)));
+          outW = Math.max(1, Math.round(outW * sizeScale));
+          outH = Math.max(1, Math.round(outH * sizeScale));
+        }
+      }
+      const vfParts: string[] = [];
+      if (frameStep > 1) {
+        vfParts.push(`select='not(mod(n\\,${frameStep}))'`, `setpts=N/(${fps}*${frameStep})/TB`);
+      }
+      vfParts.push(`fps=${outFps}`);
+      vfParts.push(`scale=${outW}:${outH}:flags=lanczos`);
+      vfParts.push('split[s0][s1];[s0]palettegen=max_colors=256[p];[s1][p]paletteuse=dither=bayer');
+      const vfStr = vfParts.join(',');
+      ffmpeg()
+        .input(pattern)
+        .inputOptions([`-framerate ${fps}`])
+        .outputOptions(['-vf', vfStr, '-loop', '0'])
+        .output(destPath)
+        .on('end', () => resolve({ ok: true, path: destPath }))
+        .on('error', (e: Error) => resolve({ ok: false, message: e.message }))
+        .run();
+    });
   }
   const effectiveDurationSec = frameStep > 1 ? (frames.length / frameStep) / outFps : videoDurationSec;
   const crfVp9 = crfFromQuality(quality, true);
@@ -930,6 +989,10 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => {
   log('window-all-closed');
+  // Keep app running in tray; don't quit. User can show overlay again from tray.
+  if (tray && !tray.isDestroyed()) {
+    return;
+  }
   if (captureTimer) clearTimeout(captureTimer);
   captureTimer = null;
   if (tray) tray.destroy();

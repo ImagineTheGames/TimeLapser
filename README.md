@@ -2,6 +2,14 @@
 
 Desktop timelapse recorder: capture your monitor, a window, or a region at set intervals, with session management and export to social media formats.
 
+## Screenshots
+
+| Overlay (Record / Pause / Stop) | Export dialog (session + presets) |
+|--------------------------------|-----------------------------------|
+| ![Overlay](screenshots/overlay.png) | ![Export](screenshots/export-dialog.png) |
+
+_Add your own screenshots to the `screenshots/` folder and they will appear here. Suggested: overlay bar, export dialog, region picker._
+
 ## Features
 
 - **Capture source**: Full monitor (choose which one), or a custom region (crop rectangle).
@@ -9,7 +17,7 @@ Desktop timelapse recorder: capture your monitor, a window, or a region at set i
 - **Sessions**: Each recording is one session. Pause keeps the same session; Stop or quitting starts a new session next time. Option to "Continue" into the last session.
 - **Overlay**: Compact bar with Record / Pause / Stop and expandable settings. Always on top.
 - **Notifications**: Option to open Windows Focus assist to reduce interruptions during recording.
-- **Export**: Convert any session to video (MP4, WebM, or MOV). Choose from a **session selector** (all sessions in the output folder). Use **presets** for Instagram Reels/Stories, YouTube/Shorts, TikTok, and Facebook Reels/Stories, or a **custom** resolution/FPS. Add **multiple export targets** in one go. Options: **crop to fit** aspect per preset, **speed up to fit** platform max duration, **aspect ratio preview** (9:16 or 16:9), optional background music and fade in/out, quality and max file size.
+- **Export**: Convert any session to video (MP4, WebM, or MOV) or **GIF**. Choose from a **session selector** (all sessions in the output folder). Each export target has its own **video format** (MP4/WebM/MOV) or can be **GIF** with aspect ratio (16:9 or 9:16), max dimension (480/720/1080/Full), quality, FPS, and max file size. Use **presets** for Instagram Reels/Stories, YouTube/Shorts, TikTok, and Facebook Reels/Stories, or **Custom** resolution/FPS. Add **multiple export targets** in one go. Video options: **crop to fit** aspect per preset, **speed up to fit** platform max duration, **aspect ratio preview** (9:16 or 16:9), optional background music and fade in/out, quality and max file size.
 
 ## Requirements
 
@@ -65,7 +73,7 @@ Output is in `release/`.
 2. **Pause / Resume**: Use **⏸ Pause** and **▶ Resume** within the same session.
 3. **Stop**: **■ Stop** ends the session; the next Record will create a new session unless you use **▶ Continue**.
 4. **Continue**: If you stopped or quit, **▶ Continue** appends to the last session folder.
-5. **Export**: After stopping (or from the overlay while recording), use **Export** to open the export dialog. Select a session (or use the one just stopped), add one or more export targets (platform presets or custom size), set options (crop to fit, speed to fit, quality), and export to MP4, WebM, or MOV.
+5. **Export**: After stopping (or from the overlay while recording), use **Export** to open the export dialog. Select a session (or use the one just stopped), add one or more export targets. For each target choose a preset (e.g. Instagram Reels, YouTube Shorts, **GIF**, or Custom), set **video format** (MP4/WebM/MOV) for video or **GIF options** (aspect ratio, max dimension, quality, max file size), then export.
 
 ## Social platform limits (used for export)
 
