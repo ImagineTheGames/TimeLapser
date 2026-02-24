@@ -51,8 +51,6 @@ jobs:
           $exe = Get-ChildItem -Path release -Filter "*.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $exe) { Write-Error "No .exe found in release/"; exit 1 }
           Write-Host "Found: $($exe.FullName)"
-          Copy-Item -Path $exe.FullName -Destination release/TimeLapser-Setup.exe -Force
-          Get-ChildItem -Path release -Filter "*.exe" -Recurse | ForEach-Object { $_.FullName }
 
       - name: Upload installer
         uses: actions/upload-artifact@v4
@@ -60,15 +58,13 @@ jobs:
           name: TimeLapser-Windows-${{ github.sha }}
           path: release/
 
-      - name: Create GitHub Release
+      - name: Create GitHub Release (notes only; electron-builder already uploads the installer)
         id: gh_release
         if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name != '')
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name || github.ref_name }}
           name: Release ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name || github.ref_name }}
-          files: release/TimeLapser-Setup.exe
           generate_release_notes: true
-          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
