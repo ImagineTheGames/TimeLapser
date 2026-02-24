@@ -81,6 +81,29 @@ function saveSettings(s: CaptureSettings) {
   store.set('captureSettings', s);
 }
 
+function getOpenAtLogin(): boolean {
+  return (store.get('openAtLogin') as boolean | undefined) ?? false;
+}
+
+function getContinueSessionPath(): string | null {
+  const p = store.get('continueSessionPath');
+  return typeof p === 'string' && p ? p : null;
+}
+
+function setContinueSessionPath(path: string | null) {
+  if (path) store.set('continueSessionPath', path);
+  else store.delete('continueSessionPath');
+}
+
+function setOpenAtLogin(value: boolean) {
+  store.set('openAtLogin', value);
+  try {
+    app.setLoginItemSettings({ openAtLogin: value });
+  } catch (err) {
+    log('setLoginItemSettings failed:', (err as Error)?.message);
+  }
+}
+
 function ensureOverlayWindow() {
   if (overlayWindow && !overlayWindow.isDestroyed()) return overlayWindow;
   log('Creating overlay window...');
@@ -201,12 +224,28 @@ async function createWindow() {
     tray.setToolTip('TimeLapser');
     tray.on('click', () => showOverlayWindow());
     log('createWindow: building context menu...');
-    const contextMenu = Menu.buildFromTemplate([
-      { label: 'Show TimeLapser', click: () => showOverlayWindow() },
-      { type: 'separator' },
-      { label: 'Quit', click: () => app.quit() },
-    ]);
-    tray.setContextMenu(contextMenu);
+    const refreshTrayMenu = () => {
+      if (!tray || tray.isDestroyed()) return;
+      const openAtLogin = getOpenAtLogin();
+      const contextMenu = Menu.buildFromTemplate([
+        { label: 'Show TimeLapser', click: () => showOverlayWindow() },
+        { type: 'separator' },
+        {
+          label: 'Start up with Windows',
+          type: 'checkbox',
+          checked: openAtLogin,
+          click: (menuItem) => {
+            const next = menuItem.checked;
+            setOpenAtLogin(next);
+            refreshTrayMenu();
+          },
+        },
+        { type: 'separator' },
+        { label: 'Quit', click: () => app.quit() },
+      ]);
+      tray.setContextMenu(contextMenu);
+    };
+    refreshTrayMenu();
     log('createWindow: done');
   } catch (err) {
     log('createWindow failed:', err);
@@ -528,6 +567,10 @@ ipcMain.handle('get-displays', async () => {
 });
 
 ipcMain.handle('get-settings', () => getSettings());
+ipcMain.handle('get-continue-session', () => getContinueSessionPath());
+ipcMain.handle('set-continue-session', (_e, path: string | null) => {
+  setContinueSessionPath(path || null);
+});
 ipcMain.handle('set-settings', (_e, s: Partial<CaptureSettings>) => {
   const next = { ...getSettings(), ...s };
   saveSettings(next);
@@ -538,20 +581,33 @@ ipcMain.handle('set-settings', (_e, s: Partial<CaptureSettings>) => {
   return getSettings();
 });
 
-ipcMain.handle('get-state', () => ({
-  state: captureState,
-  sessionFolder: currentSessionFolder,
-  frameCount: frameIndex,
-  lastSessionFolder,
-}));
+ipcMain.handle('get-state', () => {
+  const preferred = getContinueSessionPath();
+  const continueTarget = (preferred && fs.existsSync(preferred))
+    ? preferred
+    : (lastSessionFolder && fs.existsSync(lastSessionFolder) ? lastSessionFolder : null);
+  return {
+    state: captureState,
+    sessionFolder: currentSessionFolder,
+    frameCount: frameIndex,
+    lastSessionFolder,
+    continueTarget,
+  };
+});
 
-ipcMain.handle('start-recording', async (_e, newSession: boolean) => {
+ipcMain.handle('start-recording', async (_e, newSession: unknown) => {
   if (captureState === 'recording') return { ok: false, message: 'Already recording' };
   settings = getSettings();
-  if (newSession || !currentSessionFolder) {
-    const continueFolder = !newSession && lastSessionFolder && fs.existsSync(lastSessionFolder);
-    if (continueFolder) {
-      currentSessionFolder = lastSessionFolder;
+  const wantNewSession = newSession === true;
+  if (wantNewSession || !currentSessionFolder) {
+    let continuePath: string | null = null;
+    if (!wantNewSession) {
+      const preferred = getContinueSessionPath();
+      if (preferred && fs.existsSync(preferred)) continuePath = preferred;
+      else if (lastSessionFolder && fs.existsSync(lastSessionFolder)) continuePath = lastSessionFolder;
+    }
+    if (continuePath) {
+      currentSessionFolder = continuePath;
       const files = fs.readdirSync(currentSessionFolder).filter((f) => /^frame_\d+\.(png|jpg|jpeg)$/i.test(f));
       frameIndex = files.length;
     } else {
@@ -720,6 +776,20 @@ ipcMain.handle('show-audio-picker', async () => {
   return { path: result.filePaths[0] };
 });
 
+ipcMain.handle('show-watermark-picker', async () => {
+  const win = overlayWindow && !overlayWindow.isDestroyed() ? overlayWindow : BrowserWindow.getFocusedWindow();
+  const result = await dialog.showOpenDialog(win || undefined, {
+    title: 'Select watermark image',
+    filters: [
+      { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'] },
+      { name: 'All files', extensions: ['*'] },
+    ],
+    properties: ['openFile'],
+  });
+  if (result.canceled || result.filePaths.length === 0) return { path: null };
+  return { path: result.filePaths[0] };
+});
+
 ipcMain.handle('export-video', async (_e, args: {
   sessionFolder: string;
   outputPath: string;
@@ -736,6 +806,10 @@ ipcMain.handle('export-video', async (_e, args: {
   fadeOutSeconds?: number;
   gifMaxDimension?: number | 'full';
   gifQuality?: number;
+  gifMaxFrames?: number;
+  duplicateLastFrameCount?: number;
+  watermarkPath?: string | null;
+  watermarkPosition?: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right' | 'center';
 }) => {
   const {
     sessionFolder, outputPath, maxDurationSeconds, fps, width, height,
@@ -746,7 +820,12 @@ ipcMain.handle('export-video', async (_e, args: {
     format = 'mp4',
     gifMaxDimension,
     gifQuality = 70,
+    gifMaxFrames = 0,
+    duplicateLastFrameCount = 0,
+    watermarkPath = null,
+    watermarkPosition = 'bottom-right',
   } = args;
+  const hasWatermark = !!(watermarkPath && fs.existsSync(watermarkPath));
   const isGif = format === 'gif';
   /** Map quality 0–100 to CRF (100 = best quality/low CRF, 0 = high compression/high CRF). */
   const crfFromQuality = (q: number, forWebm: boolean) => {
@@ -792,13 +871,18 @@ ipcMain.handle('export-video', async (_e, args: {
   ffmpeg.setFfmpegPath(ffmpegPath);
   const firstFrame = path.join(sessionFolder, frames[0]);
   const pattern = path.join(sessionFolder, 'frame_%06d' + path.extname(firstFrame)).replace(/\\/g, '/');
+  const startNumber = 1; // frames are frame_000001, frame_000002, ...
   let outFps = fps;
   const totalDuration = frames.length / fps;
   if (maxDurationSeconds > 0 && totalDuration > maxDurationSeconds) {
     outFps = frames.length / maxDurationSeconds;
   }
   let videoDurationSec = frames.length / outFps;
+  const holdLastSec = duplicateLastFrameCount > 0 ? duplicateLastFrameCount / outFps : 0;
   let frameStep = 1;
+  if (isGif && gifMaxFrames > 0 && frames.length > gifMaxFrames) {
+    frameStep = Math.max(1, Math.ceil(frames.length / gifMaxFrames));
+  }
   if (!isGif && maxFileSizeBytes && maxFileSizeBytes > 0) {
     const targetVideoBytes = maxFileSizeBytes * 0.9;
     let targetKbps = Math.round((targetVideoBytes * 8) / videoDurationSec / 1000);
@@ -812,6 +896,19 @@ ipcMain.handle('export-video', async (_e, args: {
   }
   if (isGif) {
     return new Promise((resolve) => {
+      // Use concat demuxer so we explicitly pass every frame file (avoids image2 pattern reading only the start)
+      const concatListPath = path.join(sessionFolder, `.timelapser_concat_${Date.now()}.txt`);
+      const listContent = frames.map((f) => {
+        const fullPath = path.join(sessionFolder, f).replace(/\\/g, '/');
+        const escaped = fullPath.replace(/'/g, "'\\''");
+        return `file '${escaped}'`;
+      }).join('\n');
+      try {
+        fs.writeFileSync(concatListPath, listContent, 'utf8');
+      } catch (e) {
+        return void resolve({ ok: false, message: (e as Error).message });
+      }
+      const cleanup = () => { try { fs.unlinkSync(concatListPath); } catch { /* ignore */ } };
       let gifWidth = width;
       let gifHeight = height;
       if (typeof gifMaxDimension === 'number') {
@@ -825,10 +922,25 @@ ipcMain.handle('export-video', async (_e, args: {
       const scaleFactor = Math.max(0.2, Math.min(1, 0.2 + 0.8 * (gifQuality / 100)));
       let outW = Math.max(1, Math.round(gifWidth * scaleFactor));
       let outH = Math.max(1, Math.round(gifHeight * scaleFactor));
+      // When gifMaxFrames is set: respect user's frame count and scale resolution to fit file size.
+      // When gifMaxFrames is 0: derive frame count from file size, then scale resolution if still over.
+      const bytesPerPixelPerFrame = gifMaxFrames > 0 ? 0.4 : 1.2;
+      const minAnimatedFrames = 2; // avoid single-frame static GIF only
+      if (maxFileSizeBytes && maxFileSizeBytes > 0 && gifMaxFrames <= 0) {
+        const targetBytes = maxFileSizeBytes * 0.9;
+        const currentPixels = outW * outH;
+        let maxNumFramesFromSize = currentPixels > 0
+          ? Math.floor(targetBytes / (currentPixels * bytesPerPixelPerFrame))
+          : frames.length;
+        if (frames.length >= minAnimatedFrames && maxNumFramesFromSize < minAnimatedFrames) maxNumFramesFromSize = minAnimatedFrames;
+        maxNumFramesFromSize = Math.max(1, maxNumFramesFromSize);
+        const neededFrameStep = Math.ceil(frames.length / maxNumFramesFromSize);
+        if (neededFrameStep > frameStep) frameStep = neededFrameStep;
+      }
       const numFrames = frameStep > 1 ? Math.ceil(frames.length / frameStep) : frames.length;
+      // Scale down resolution when over target size (keeps user's frame count when gifMaxFrames was set)
       if (maxFileSizeBytes && maxFileSizeBytes > 0 && numFrames > 0) {
         const targetBytes = maxFileSizeBytes * 0.9;
-        const bytesPerPixelPerFrame = 1.2;
         const targetPixels = targetBytes / (numFrames * bytesPerPixelPerFrame);
         const currentPixels = outW * outH;
         if (currentPixels > 0 && currentPixels > targetPixels) {
@@ -837,22 +949,62 @@ ipcMain.handle('export-video', async (_e, args: {
           outH = Math.max(1, Math.round(outH * sizeScale));
         }
       }
+      // Resolution floor: never output smaller than user's chosen max dimension (easy-mode slider)
+      if (typeof gifMaxDimension === 'number') {
+        const longSide = Math.max(outW, outH);
+        if (longSide < gifMaxDimension) {
+          const scaleUp = gifMaxDimension / longSide;
+          outW = Math.max(1, Math.round(outW * scaleUp));
+          outH = Math.max(1, Math.round(outH * scaleUp));
+        }
+      }
       const vfParts: string[] = [];
       if (frameStep > 1) {
-        vfParts.push(`select='not(mod(n\\,${frameStep}))'`, `setpts=N/(${fps}*${frameStep})/TB`);
+        // Sample evenly across the whole timeline: every frameStep-th frame (0, frameStep, 2*frameStep, ...)
+        vfParts.push(`select='not(mod(n\\,${frameStep}))'`, `setpts=N/(${outFps})/TB`);
       }
-      vfParts.push(`fps=${outFps}`);
+      // Only apply fps when not skipping (when skipping, setpts already defines timing; fps would risk dropping frames)
+      if (frameStep <= 1) vfParts.push(`fps=${outFps}`);
       vfParts.push(`scale=${outW}:${outH}:flags=lanczos`);
+      if (holdLastSec > 0) {
+        vfParts.push(`tpad=stop_mode=clone:stop_duration=${holdLastSec}`);
+      }
       vfParts.push('split[s0][s1];[s0]palettegen=max_colors=256[p];[s1][p]paletteuse=dither=bayer');
-      const vfStr = vfParts.join(',');
-      ffmpeg()
-        .input(pattern)
-        .inputOptions([`-framerate ${fps}`])
-        .outputOptions(['-vf', vfStr, '-loop', '0'])
-        .output(destPath)
-        .on('end', () => resolve({ ok: true, path: destPath }))
-        .on('error', (e: Error) => resolve({ ok: false, message: e.message }))
-        .run();
+      const overlayPos = (): string => {
+        const m = (x: string, y: string) => `overlay=x=${x}:y=${y}`;
+        switch (watermarkPosition) {
+          case 'top-left': return m('10', '10');
+          case 'top-right': return m("'main_w-overlay_w-10'", '10');
+          case 'bottom-left': return m('10', "'main_h-overlay_h-10'");
+          case 'bottom-right': return m("'main_w-overlay_w-10'", "'main_h-overlay_h-10'");
+          case 'center': return m("'(main_w-overlay_w)/2'", "'(main_h-overlay_h)/2'");
+          default: return m("'main_w-overlay_w-10'", "'main_h-overlay_h-10'");
+        }
+      };
+      if (hasWatermark) {
+        const baseChain = vfParts.join(',');
+        const filterComplex = `[0:v]${baseChain}[v];[1:v]scale=200:-1[wm];[v][wm]${overlayPos()}[out]`;
+        ffmpeg()
+          .input(concatListPath)
+          .inputOptions(['-f', 'concat', '-safe', '0'])
+          .input(watermarkPath!)
+          .complexFilter(filterComplex, 'out')
+          .outputOptions(['-r', String(outFps), '-loop', '0', '-map', '[out]'])
+          .output(destPath)
+          .on('end', () => { cleanup(); resolve({ ok: true, path: destPath }); })
+          .on('error', (e: Error) => { cleanup(); resolve({ ok: false, message: e.message }); })
+          .run();
+      } else {
+        const vfStr = vfParts.join(',');
+        ffmpeg()
+          .input(concatListPath)
+          .inputOptions(['-f', 'concat', '-safe', '0'])
+          .outputOptions(['-r', String(outFps), '-vf', vfStr, '-loop', '0'])
+          .output(destPath)
+          .on('end', () => { cleanup(); resolve({ ok: true, path: destPath }); })
+          .on('error', (e: Error) => { cleanup(); resolve({ ok: false, message: e.message }); })
+          .run();
+      }
     });
   }
   const effectiveDurationSec = frameStep > 1 ? (frames.length / frameStep) / outFps : videoDurationSec;
@@ -874,19 +1026,25 @@ ipcMain.handle('export-video', async (_e, args: {
   }
 
   const hasAudio = audioPath && fs.existsSync(audioPath);
-  const fadeIn = Math.max(0, Math.min(fadeInSeconds, videoDurationSec / 2));
-  const fadeOut = Math.max(0, Math.min(fadeOutSeconds, videoDurationSec / 2));
-  const fadeOutStart = Math.max(0, videoDurationSec - fadeOut);
+  const totalVideoSec = videoDurationSec + holdLastSec;
+  const fadeIn = Math.max(0, Math.min(fadeInSeconds, totalVideoSec / 2));
+  const fadeOut = Math.max(0, Math.min(fadeOutSeconds, totalVideoSec / 2));
+  const fadeOutStart = Math.max(0, totalVideoSec - fadeOut);
+
+  const overlayPosExpr = (): string => {
+    const m = (x: string, y: string) => `overlay=x=${x}:y=${y}`;
+    switch (watermarkPosition) {
+      case 'top-left': return m('10', '10');
+      case 'top-right': return m("'main_w-overlay_w-10'", '10');
+      case 'bottom-left': return m('10', "'main_h-overlay_h-10'");
+      case 'bottom-right': return m("'main_w-overlay_w-10'", "'main_h-overlay_h-10'");
+      case 'center': return m("'(main_w-overlay_w)/2'", "'(main_h-overlay_h)/2'");
+      default: return m("'main_w-overlay_w-10'", "'main_h-overlay_h-10'");
+    }
+  };
 
   return new Promise((resolve) => {
     const runVideoOnly = (dest: string, onDone: (err: Error | null) => void) => {
-      const chain = ffmpeg()
-        .input(pattern)
-        .inputOptions([`-framerate ${fps}`])
-        .outputOptions(videoOpts)
-        .output(dest)
-        .on('end', () => onDone(null))
-        .on('error', onDone);
       const vfParts: string[] = [];
       if (frameStep > 1) {
         vfParts.push(`select='not(mod(n\\,${frameStep}))'`, `setpts=N/(${fps}*${frameStep})/TB`);
@@ -894,15 +1052,36 @@ ipcMain.handle('export-video', async (_e, args: {
       if (cropToFit) {
         vfParts.push(`scale=${width}:${height}:force_original_aspect_ratio=increase`, `crop=${width}:${height}`);
       } else {
-        // Fit inside resolution (letterbox/pillarbox), no crop — matches preview when "Crop to fit" is unchecked
         vfParts.push(`scale=${width}:${height}:force_original_aspect_ratio=decrease`, `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2`);
       }
-      if (vfParts.length > 0) {
-        chain.outputOptions(['-vf', vfParts.join(',')]);
-      } else {
-        chain.size(`${width}x${height}`);
+      if (holdLastSec > 0) {
+        vfParts.push(`tpad=stop_mode=clone:stop_duration=${holdLastSec}`);
       }
-      chain.run();
+      if (hasWatermark) {
+        const baseChain = vfParts.join(',');
+        const filterComplex = `[0:v]${baseChain}[v];[1:v]scale=200:-1[wm];[v][wm]${overlayPosExpr()}[out]`;
+        const chain = ffmpeg()
+          .input(pattern)
+          .inputOptions([`-start_number ${startNumber}`, `-framerate ${fps}`])
+          .input(watermarkPath!)
+          .complexFilter(filterComplex, 'out')
+          .outputOptions([...videoOpts, '-map', '[out]'])
+          .output(dest)
+          .on('end', () => onDone(null))
+          .on('error', onDone);
+        chain.run();
+      } else {
+        const chain = ffmpeg()
+          .input(pattern)
+          .inputOptions([`-start_number ${startNumber}`, `-framerate ${fps}`]);
+        chain.outputOptions(videoOpts).output(dest).on('end', () => onDone(null)).on('error', onDone);
+        if (vfParts.length > 0) {
+          chain.outputOptions(['-vf', vfParts.join(',')]);
+        } else {
+          chain.size(`${width}x${height}`);
+        }
+        chain.run();
+      }
     };
 
     if (!hasAudio) {
@@ -920,7 +1099,7 @@ ipcMain.handle('export-video', async (_e, args: {
         return;
       }
       const audioFilter: string[] = [];
-      audioFilter.push(`atrim=0:${videoDurationSec}`);
+      audioFilter.push(`atrim=0:${totalVideoSec}`);
       audioFilter.push('asetpts=PTS-STARTPTS');
       if (fadeIn > 0) audioFilter.push(`afade=t=in:st=0:d=${fadeIn}`);
       if (fadeOut > 0) audioFilter.push(`afade=t=out:st=${fadeOutStart}:d=${fadeOut}`);
@@ -977,6 +1156,11 @@ app.whenReady().then(async () => {
     log('Loading settings...');
     settings = getSettings();
     log('Settings loaded, outputFolder:', settings.outputFolder);
+    try {
+      app.setLoginItemSettings({ openAtLogin: getOpenAtLogin() });
+    } catch (err) {
+      log('setLoginItemSettings on startup:', (err as Error)?.message);
+    }
     await createWindow();
     log('Startup complete');
     log('Log file:', path.join(app.getPath('userData'), 'logs', 'main.log'));

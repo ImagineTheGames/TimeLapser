@@ -32,11 +32,18 @@ export default function SettingsPanel({ sessionFolder, frameCount, onClose, onOp
   const [displays, setDisplays] = useState<Display[]>([]);
   const [settings, setSettings] = useState<Partial<Record<string, unknown>>>({});
   const [sessionSizeBytes, setSessionSizeBytes] = useState<number>(0);
+  const [sessionList, setSessionList] = useState<{ path: string; name: string }[]>([]);
+  const [continueSessionPath, setContinueSessionPathState] = useState<string | null>(null);
   const [panelPosition, setPanelPosition] = useState<{ top?: number; right?: number; bottom?: number; left?: number }>({ top: BAR_HEIGHT, right: 12 });
 
   useEffect(() => {
-    window.timelapser.getDisplays().then(setDisplays).catch(() => setDisplays([]));
-    window.timelapser.getSettings().then(setSettings).catch(() => setSettings({}));
+    const t = setTimeout(() => {
+      window.timelapser.getDisplays().then(setDisplays).catch(() => setDisplays([]));
+      window.timelapser.getSettings().then(setSettings).catch(() => setSettings({}));
+      window.timelapser.getSessionList().then(setSessionList).catch(() => setSessionList([]));
+      window.timelapser.getContinueSessionPath().then(setContinueSessionPathState).catch(() => setContinueSessionPathState(null));
+    }, 0);
+    return () => clearTimeout(t);
   }, []);
 
   useEffect(() => {
@@ -49,18 +56,21 @@ export default function SettingsPanel({ sessionFolder, frameCount, onClose, onOp
   }, []);
 
   useEffect(() => {
-    window.timelapser.getOverlayBoundsAndWorkArea?.()?.then(({ bounds, workArea }) => {
-      const spaceBelow = workArea.y + workArea.height - (bounds.y + bounds.height);
-      const spaceAbove = bounds.y - workArea.y;
-      const spaceRight = workArea.x + workArea.width - (bounds.x + bounds.width);
-      const spaceLeft = bounds.x - workArea.x;
-      const positionBelow = spaceBelow >= spaceAbove;
-      const positionRight = spaceRight >= spaceLeft;
-      setPanelPosition({
-        ...(positionBelow ? { top: BAR_HEIGHT } : { bottom: BAR_HEIGHT }),
-        ...(positionRight ? { left: 12 } : { right: 12 }),
+    const t = setTimeout(() => {
+      window.timelapser.getOverlayBoundsAndWorkArea?.()?.then(({ bounds, workArea }) => {
+        const spaceBelow = workArea.y + workArea.height - (bounds.y + bounds.height);
+        const spaceAbove = bounds.y - workArea.y;
+        const spaceRight = workArea.x + workArea.width - (bounds.x + bounds.width);
+        const spaceLeft = bounds.x - workArea.x;
+        const positionBelow = spaceBelow >= spaceAbove;
+        const positionRight = spaceRight >= spaceLeft;
+        setPanelPosition({
+          ...(positionBelow ? { top: BAR_HEIGHT } : { bottom: BAR_HEIGHT }),
+          ...(positionRight ? { left: 12 } : { right: 12 }),
+        });
       });
-    });
+    }, 0);
+    return () => clearTimeout(t);
   }, []);
 
   useEffect(() => {
@@ -99,6 +109,28 @@ export default function SettingsPanel({ sessionFolder, frameCount, onClose, onOp
             </span>
           </div>
         )}
+
+        <label className="settings-panel__row">
+          <span>Continue into session</span>
+          <select
+            value={continueSessionPath ?? ''}
+            onChange={(e) => {
+              const v = e.target.value;
+              const path = v || null;
+              setContinueSessionPathState(path);
+              window.timelapser.setContinueSessionPath(path);
+            }}
+            title="Choose which session the Continue button will append to"
+          >
+            <option value="">Last stopped session</option>
+            {sessionList.map((s) => (
+              <option key={s.path} value={s.path}>
+                {s.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <p className="settings-panel__hint">When you press ▶ Continue, recording will append to the selected session.</p>
 
         <label className="settings-panel__row">
           <span>Capture interval (seconds)</span>

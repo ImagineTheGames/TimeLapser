@@ -4,7 +4,7 @@ interface TimeLapserAPI {
   getDisplays: () => Promise<{ id: number; index: number; name: string; bounds: { x: number; y: number; width: number; height: number } }[]>;
   getSettings: () => Promise<CaptureSettings>;
   setSettings: (s: Partial<CaptureSettings>) => Promise<CaptureSettings>;
-  getState: () => Promise<{ state: string; sessionFolder: string | null; frameCount: number; lastSessionFolder: string | null }>;
+  getState: () => Promise<{ state: string; sessionFolder: string | null; frameCount: number; lastSessionFolder: string | null; continueTarget: string | null }>;
   startRecording: (newSession: boolean) => Promise<{ ok: boolean; message?: string; sessionFolder?: string }>;
   pauseRecording: () => Promise<{ ok: boolean }>;
   resumeRecording: () => Promise<{ ok: boolean }>;
@@ -14,11 +14,14 @@ interface TimeLapserAPI {
   getSessionFrameCount: (folder: string) => Promise<number>;
   getSessionSize: (folder: string) => Promise<{ bytes: number }>;
   getSessionList: () => Promise<{ path: string; name: string }[]>;
+  getContinueSessionPath: () => Promise<string | null>;
+  setContinueSessionPath: (path: string | null) => Promise<void>;
   getDefaultExportPath: (folder: string) => Promise<string>;
   getFirstFrameDataUrl: (folder: string) => Promise<{ dataUrl: string | null }>;
   showOutputFolderPicker: () => Promise<{ path: string | null }>;
   showExportSavePicker: (defaultPath: string, format?: string) => Promise<{ path: string | null }>;
   showAudioPicker: () => Promise<{ path: string | null }>;
+  showWatermarkPicker: () => Promise<{ path: string | null }>;
   exportVideo: (args: ExportVideoArgs) => Promise<{ ok: boolean; path?: string; message?: string }>;
   reportRendererError: (message: string, stack?: string) => void;
   logFromRenderer: (message: string) => void;
@@ -67,6 +70,14 @@ interface ExportVideoArgs {
   gifMaxDimension?: number | 'full';
   /** GIF: quality 0–100 (affects scale/size). */
   gifQuality?: number;
+  /** GIF: max output frames (e.g. 500 for LinkedIn). 0 = no limit. */
+  gifMaxFrames?: number;
+  /** Number of extra frames to duplicate the last frame (hold on end). 0 = off. */
+  duplicateLastFrameCount?: number;
+  /** Path to watermark image; applied to all exports when set. */
+  watermarkPath?: string | null;
+  /** Watermark position on the frame. */
+  watermarkPosition?: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right' | 'center';
 }
 
 declare global {

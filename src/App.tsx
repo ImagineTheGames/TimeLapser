@@ -8,11 +8,12 @@ export default function App() {
   const [expanded, setExpanded] = useState(false);
   /** When expanded, true = settings panel is to the right of the bar (e.g. when overlay is near left edge). */
   const [panelOnRight, setPanelOnRight] = useState(false);
-  const [state, setState] = useState<{ state: string; sessionFolder: string | null; frameCount: number; lastSessionFolder: string | null }>({
+  const [state, setState] = useState<{ state: string; sessionFolder: string | null; frameCount: number; lastSessionFolder: string | null; continueTarget: string | null }>({
     state: 'idle',
     sessionFolder: null,
     frameCount: 0,
     lastSessionFolder: null,
+    continueTarget: null,
   });
   const [showExport, setShowExport] = useState(false);
   const [exportSessionFolder, setExportSessionFolder] = useState<string | null>(null);
@@ -43,7 +44,7 @@ export default function App() {
     if (showExport) {
       window.timelapser?.setOverlayHeight?.(720);
     } else if (expanded) {
-      window.timelapser?.setOverlayExpanded?.(true).then((res) => {
+      window.timelapser?.setOverlayExpanded?.(true)?.then((res) => {
         if (res?.panelOnRight != null) setPanelOnRight(res.panelOnRight);
       });
     } else {
@@ -110,6 +111,7 @@ export default function App() {
               frameCount={state.frameCount}
               sessionSizeBytes={sessionSizeBytes}
               lastSessionFolder={state.lastSessionFolder}
+              continueTarget={state.continueTarget}
               expanded={expanded}
               onStartNew={startNewSession}
               onStartContinue={continueSession}
@@ -141,6 +143,7 @@ export default function App() {
           frameCount={state.frameCount}
           sessionSizeBytes={sessionSizeBytes}
           lastSessionFolder={state.lastSessionFolder}
+          continueTarget={state.continueTarget}
           expanded={expanded}
           onStartNew={startNewSession}
           onStartContinue={continueSession}

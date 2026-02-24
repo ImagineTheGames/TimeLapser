@@ -15,6 +15,8 @@ interface OverlayProps {
   frameCount: number;
   sessionSizeBytes?: number;
   lastSessionFolder: string | null;
+  /** Session path to continue into (from settings or last stopped). When set, Continue button is shown. */
+  continueTarget: string | null;
   expanded: boolean;
   onStartNew: () => void;
   onStartContinue: () => void;
@@ -38,6 +40,7 @@ export default function Overlay({
   onOpenExport,
   onOpenSettings,
   lastSessionFolder,
+  continueTarget,
 }: OverlayProps) {
   const s = state as State;
 
@@ -67,12 +70,12 @@ export default function Overlay({
             >
               ● Record
             </button>
-            {lastSessionFolder && (
+            {continueTarget && (
               <button
                 type="button"
                 className="overlay__btn overlay__btn--secondary"
                 onClick={onStartContinue}
-                title="Continue last session"
+                title="Continue into selected session"
               >
                 ▶ Continue
               </button>

@@ -5,6 +5,11 @@ const ENCODING_BY_FORMAT: Record<string, string> = { mp4: 'H.264', mov: 'H.264',
 
 export const CUSTOM_PRESET_ID = 'custom';
 export const GIF_PRESET_ID = 'gif';
+export const LINKEDIN_GIF_PRESET_ID = 'linkedin_gif';
+
+/** LinkedIn GIF limits: 5 MB max, 500 frames max. */
+export const LINKEDIN_GIF_MAX_SIZE_MB = 5;
+export const LINKEDIN_GIF_MAX_FRAMES = 500;
 
 export type Preset = {
   id: string;
@@ -39,7 +44,21 @@ const GIF_DIMENSIONS_16_9: Record<number | 'full', { width: number; height: numb
   1080: { width: 1920, height: 1080 },
   full: { width: 1920, height: 1080 },
 };
+/** Given long-side pixels and aspect, return width x height (for any numeric resolution). */
+function gifDimensionsFromLongSide(longSide: number, aspectRatio: '9:16' | '16:9'): { width: number; height: number } {
+  if (aspectRatio === '16:9') {
+    return { width: longSide, height: Math.max(1, Math.round(longSide * 9 / 16)) };
+  }
+  return { width: Math.max(1, Math.round(longSide * 9 / 16)), height: longSide };
+}
 function getGifDimensions(maxDim: GifMaxDimension, aspectRatio: '9:16' | '16:9'): { width: number; height: number } {
+  if (maxDim === 'full') {
+    const map = aspectRatio === '16:9' ? GIF_DIMENSIONS_16_9 : GIF_DIMENSIONS_9_16;
+    return map.full;
+  }
+  if (typeof maxDim === 'number') {
+    return gifDimensionsFromLongSide(maxDim, aspectRatio);
+  }
   const map = aspectRatio === '16:9' ? GIF_DIMENSIONS_16_9 : GIF_DIMENSIONS_9_16;
   return map[maxDim ?? 720] ?? map[720];
 }
@@ -53,7 +72,7 @@ const DEFAULT_TARGET_OPTIONS = {
   maxFileSizeMb: null as number | null,
 };
 
-export type GifMaxDimension = 480 | 720 | 1080 | 'full';
+export type GifMaxDimension = number | 'full';
 
 export interface ExportTarget {
   platformId: string;
@@ -61,7 +80,7 @@ export interface ExportTarget {
   /** Video format for this target when platformId is not GIF. */
   videoFormat?: 'mp4' | 'webm' | 'mov';
   customPreset?: { width: number; height: number; fps: number; maxDurationSeconds: number };
-  /** GIF: max dimension (480, 720, 1080, full). */
+  /** GIF: max/long-side dimension in pixels (e.g. 240–1080) or 'full'. */
   gifMaxDimension?: GifMaxDimension;
   /** GIF: aspect ratio 16:9 or 9:16. */
   gifAspectRatio?: '16:9' | '9:16';
@@ -75,6 +94,12 @@ export interface ExportTarget {
   cropToFit?: boolean;
   quality?: number;
   maxFileSizeMb?: number | null;
+  /** Hold last frame: number of additional frames to duplicate at the end. 0 = off. */
+  duplicateLastFrameCount?: number;
+  /** GIF / LinkedIn: max frames (LinkedIn allows 500). 0 = no limit. */
+  gifMaxFrames?: number;
+  /** When true, show simple sliders for GIF/LinkedIn GIF (target size, frames, resolution, FPS). */
+  gifSimpleSliders?: boolean;
 }
 
 function getPresetForTarget(t: ExportTarget): Preset {
@@ -88,11 +113,16 @@ function getPresetForTarget(t: ExportTarget): Preset {
     const dim = getGifDimensions(t.gifMaxDimension ?? 720, aspect);
     return { id: GIF_PRESET_ID, name: 'GIF', maxDurationSeconds: 0, width: dim.width, height: dim.height, aspectRatio: aspect, fps: 10 };
   }
+  if (t.platformId === LINKEDIN_GIF_PRESET_ID) {
+    const aspect = t.gifAspectRatio ?? '16:9';
+    const dim = getGifDimensions(t.gifMaxDimension ?? 1080, aspect);
+    return { id: LINKEDIN_GIF_PRESET_ID, name: 'LinkedIn (GIF)', maxDurationSeconds: 0, width: dim.width, height: dim.height, aspectRatio: aspect, fps: 10 };
+  }
   return SOCIAL_PRESETS.find((p) => p.id === t.platformId) ?? SOCIAL_PRESETS[0];
 }
 
 function getFormatForTarget(t: ExportTarget): 'mp4' | 'webm' | 'mov' | 'gif' {
-  return t.platformId === GIF_PRESET_ID ? 'gif' : (t.videoFormat ?? 'mp4');
+  return (t.platformId === GIF_PRESET_ID || t.platformId === LINKEDIN_GIF_PRESET_ID) ? 'gif' : (t.videoFormat ?? 'mp4');
 }
 
 function getEffectiveFpsForTarget(t: ExportTarget, frameCount: number): number {
@@ -110,6 +140,10 @@ function getEffectiveFpsForTarget(t: ExportTarget, frameCount: number): number {
 
 function getDurationSecForTarget(t: ExportTarget, frameCount: number): number {
   if (frameCount <= 0) return 0;
+  if (getFormatForTarget(t) === 'gif') {
+    const out = computeGifOutput(t, frameCount);
+    return out ? out.durationSec : 0;
+  }
   return frameCount / getEffectiveFpsForTarget(t, frameCount);
 }
 
@@ -117,12 +151,8 @@ function getEstimatedFileSizeMbForTarget(t: ExportTarget, frameCount: number): n
   if (frameCount <= 0) return null;
   const format = getFormatForTarget(t);
   if (format === 'gif') {
-    const durationSec = getDurationSecForTarget(t, frameCount);
-    const preset = getPresetForTarget(t);
-    const pixels = preset.width * preset.height;
-    const refPixels = 1920 * 1080;
-    const qualityFactor = (t.gifQuality ?? 70) / 100;
-    return (durationSec * 0.5 * (pixels / refPixels) * (0.3 + 0.7 * qualityFactor)); // rough estimate for GIF
+    const out = computeGifOutput(t, frameCount);
+    return out ? out.estimatedSizeMb : null;
   }
   const durationSec = getDurationSecForTarget(t, frameCount);
   const preset = getPresetForTarget(t);
@@ -138,6 +168,69 @@ function getEstimatedFileSizeMbForTarget(t: ExportTarget, frameCount: number): n
   return estimatedMb;
 }
 
+/** Mirrors backend GIF logic so we can show accurate live preview (frames, FPS, resolution, duration, size). */
+export function computeGifOutput(
+  t: ExportTarget,
+  frameCount: number
+): { numFrames: number; outFps: number; outW: number; outH: number; durationSec: number; estimatedSizeBytes: number; estimatedSizeMb: number } | null {
+  if (frameCount <= 0) return null;
+  const preset = getPresetForTarget(t);
+  let gifWidth = preset.width;
+  let gifHeight = preset.height;
+  const gifQuality = t.gifQuality ?? 70;
+  const fps = t.fpsOverride ?? preset.fps;
+  const maxFileSizeBytes = (t.maxFileSizeMb != null && t.maxFileSizeMb > 0) ? Math.round(t.maxFileSizeMb * 1024 * 1024) : null;
+  const gifMaxFrames = t.gifMaxFrames ?? 0;
+
+  const scaleFactor = Math.max(0.2, Math.min(1, 0.2 + 0.8 * (gifQuality / 100)));
+  let outW = Math.max(1, Math.round(gifWidth * scaleFactor));
+  let outH = Math.max(1, Math.round(gifHeight * scaleFactor));
+  const bytesPerPixelPerFrame = gifMaxFrames > 0 ? 0.4 : 1.2;
+  const minAnimatedFrames = 2;
+
+  let frameStep = 1;
+  if (gifMaxFrames > 0 && frameCount > gifMaxFrames) {
+    frameStep = Math.max(1, Math.ceil(frameCount / gifMaxFrames));
+  }
+  // When gifMaxFrames is set: keep that frame count and scale resolution to fit. When 0: derive frame count from file size.
+  if (maxFileSizeBytes && maxFileSizeBytes > 0 && gifMaxFrames <= 0) {
+    const targetBytes = maxFileSizeBytes * 0.9;
+    const currentPixels = outW * outH;
+    let maxNumFramesFromSize = currentPixels > 0
+      ? Math.floor(targetBytes / (currentPixels * bytesPerPixelPerFrame))
+      : frameCount;
+    if (frameCount >= minAnimatedFrames && maxNumFramesFromSize < minAnimatedFrames) maxNumFramesFromSize = minAnimatedFrames;
+    maxNumFramesFromSize = Math.max(1, maxNumFramesFromSize);
+    const neededFrameStep = Math.ceil(frameCount / maxNumFramesFromSize);
+    if (neededFrameStep > frameStep) frameStep = neededFrameStep;
+  }
+  const numFrames = frameStep > 1 ? Math.ceil(frameCount / frameStep) : frameCount;
+  if (maxFileSizeBytes && maxFileSizeBytes > 0 && numFrames > 0) {
+    const targetBytes = maxFileSizeBytes * 0.9;
+    const targetPixels = targetBytes / (numFrames * bytesPerPixelPerFrame);
+    const currentPixels = outW * outH;
+    if (currentPixels > 0 && currentPixels > targetPixels) {
+      const sizeScale = Math.max(0.1, Math.min(1, Math.sqrt(targetPixels / currentPixels)));
+      outW = Math.max(1, Math.round(outW * sizeScale));
+      outH = Math.max(1, Math.round(outH * sizeScale));
+    }
+  }
+  // Resolution floor: never smaller than user's chosen max dimension (matches backend)
+  const maxDim = t.gifMaxDimension;
+  if (maxDim && typeof maxDim === 'number') {
+    const longSide = Math.max(outW, outH);
+    if (longSide < maxDim) {
+      const scaleUp = maxDim / longSide;
+      outW = Math.max(1, Math.round(outW * scaleUp));
+      outH = Math.max(1, Math.round(outH * scaleUp));
+    }
+  }
+  const estimatedSizeBytes = numFrames * outW * outH * bytesPerPixelPerFrame;
+  const estimatedSizeMb = estimatedSizeBytes / (1024 * 1024);
+  const durationSec = numFrames / fps;
+  return { numFrames, outFps: fps, outW, outH, durationSec, estimatedSizeBytes, estimatedSizeMb };
+}
+
 interface ExportDialogProps {
   sessionFolder: string | null;
   onClose: () => void;
@@ -148,6 +241,8 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
   const [selectedSessionFolder, setSelectedSessionFolder] = useState<string>(initialSessionFolder ?? '');
   const [outputPath, setOutputPath] = useState('');
   const [audioPath, setAudioPath] = useState<string | null>(null);
+  const [watermarkPath, setWatermarkPath] = useState<string | null>(null);
+  const [watermarkPosition, setWatermarkPosition] = useState<'top-left' | 'top-right' | 'bottom-left' | 'bottom-right' | 'center'>('bottom-right');
   const [fadeInSeconds, setFadeInSeconds] = useState(0);
   const [fadeOutSeconds, setFadeOutSeconds] = useState(0);
   const [exporting, setExporting] = useState(false);
@@ -216,14 +311,15 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
   const addTarget = () => {
     const last = targets[targets.length - 1];
     const newPlatformId = last?.platformId ?? SOCIAL_PRESETS[0].id;
-    const newFormat = newPlatformId === GIF_PRESET_ID ? 'gif' : (last?.videoFormat ?? 'mp4');
+    const newFormat = (newPlatformId === GIF_PRESET_ID || newPlatformId === LINKEDIN_GIF_PRESET_ID) ? 'gif' : (last?.videoFormat ?? 'mp4');
     const existingPaths = targets.map((t) => t.outputPath).filter(Boolean) as string[];
     const newPath = getNextUniquePath(last?.outputPath || outputPath || 'export.mp4', existingPaths, newFormat);
     const newTarget: ExportTarget = {
       platformId: newPlatformId,
       outputPath: newPath,
-      videoFormat: newPlatformId === GIF_PRESET_ID ? undefined : (last?.videoFormat ?? 'mp4'),
+      videoFormat: (newPlatformId === GIF_PRESET_ID || newPlatformId === LINKEDIN_GIF_PRESET_ID) ? undefined : (last?.videoFormat ?? 'mp4'),
       ...(newPlatformId === GIF_PRESET_ID ? { gifMaxDimension: last?.gifMaxDimension ?? 720, gifAspectRatio: last?.gifAspectRatio ?? '9:16', gifQuality: last?.gifQuality ?? 70 } : {}),
+      ...(newPlatformId === LINKEDIN_GIF_PRESET_ID ? { gifMaxDimension: last?.gifMaxDimension ?? 1080, gifAspectRatio: last?.gifAspectRatio ?? '16:9', gifQuality: last?.gifQuality ?? 70, gifMaxFrames: last?.gifMaxFrames ?? LINKEDIN_GIF_MAX_FRAMES, maxFileSizeMb: last?.maxFileSizeMb ?? LINKEDIN_GIF_MAX_SIZE_MB } : {}),
       ...(newPlatformId === CUSTOM_PRESET_ID && last?.customPreset ? { customPreset: { ...last.customPreset } } : {}),
       fpsOverride: last?.fpsOverride,
       targetDurationSeconds: last?.targetDurationSeconds ?? undefined,
@@ -231,6 +327,7 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
       cropToFit: last?.cropToFit ?? DEFAULT_TARGET_OPTIONS.cropToFit,
       quality: last?.quality ?? DEFAULT_TARGET_OPTIONS.quality,
       maxFileSizeMb: last?.maxFileSizeMb ?? DEFAULT_TARGET_OPTIONS.maxFileSizeMb,
+      duplicateLastFrameCount: last?.duplicateLastFrameCount ?? 0,
     };
     setTargets([...targets, newTarget]);
   };
@@ -250,6 +347,8 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
         gifMaxDimension: prev.gifMaxDimension,
         gifAspectRatio: prev.gifAspectRatio,
         gifQuality: prev.gifQuality,
+        gifMaxFrames: prev.gifMaxFrames,
+        gifSimpleSliders: prev.gifSimpleSliders,
         customPreset: prev.customPreset ? { ...prev.customPreset } : undefined,
         fpsOverride: prev.fpsOverride,
         targetDurationSeconds: prev.targetDurationSeconds ?? undefined,
@@ -257,6 +356,7 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
         cropToFit: prev.cropToFit ?? DEFAULT_TARGET_OPTIONS.cropToFit,
         quality: prev.quality ?? DEFAULT_TARGET_OPTIONS.quality,
         maxFileSizeMb: prev.maxFileSizeMb ?? DEFAULT_TARGET_OPTIONS.maxFileSizeMb,
+        duplicateLastFrameCount: prev.duplicateLastFrameCount ?? 0,
         outputPath: newPath,
       };
     }));
@@ -279,11 +379,21 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
         if (next.gifMaxDimension == null) next.gifMaxDimension = 720;
         if (next.gifAspectRatio == null) next.gifAspectRatio = '9:16';
         if (next.gifQuality == null) next.gifQuality = 70;
+        next.gifMaxFrames = undefined;
         next.outputPath = basePath + '.gif';
-      } else if (upd.platformId != null && t.platformId === GIF_PRESET_ID) {
+      } else if (upd.platformId === LINKEDIN_GIF_PRESET_ID) {
+        next.videoFormat = undefined;
+        if (next.gifMaxDimension == null) next.gifMaxDimension = 1080;
+        if (next.gifAspectRatio == null) next.gifAspectRatio = '16:9';
+        if (next.gifQuality == null) next.gifQuality = 70;
+        if (next.gifMaxFrames == null) next.gifMaxFrames = LINKEDIN_GIF_MAX_FRAMES;
+        if (next.maxFileSizeMb == null) next.maxFileSizeMb = LINKEDIN_GIF_MAX_SIZE_MB;
+        next.outputPath = basePath + '.gif';
+      } else if (upd.platformId != null && (t.platformId === GIF_PRESET_ID || t.platformId === LINKEDIN_GIF_PRESET_ID)) {
         next.gifMaxDimension = undefined;
         next.gifAspectRatio = undefined;
         next.gifQuality = undefined;
+        next.gifMaxFrames = undefined;
         next.videoFormat = next.videoFormat ?? 'mp4';
         next.outputPath = basePath + '.' + (next.videoFormat ?? 'mp4');
       }
@@ -358,6 +468,10 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
         fadeOutSeconds: format === 'gif' ? 0 : fadeOutSeconds,
         gifMaxDimension: format === 'gif' ? (t.gifMaxDimension === 'full' ? 'full' : t.gifMaxDimension ?? 720) : undefined,
         gifQuality: format === 'gif' ? (t.gifQuality ?? 70) : undefined,
+        gifMaxFrames: format === 'gif' ? (t.gifMaxFrames ?? 0) : undefined,
+        duplicateLastFrameCount: t.duplicateLastFrameCount ?? 0,
+        watermarkPath: watermarkPath || null,
+        watermarkPosition,
       });
       if (result.ok && result.path) okPaths.push(result.path);
       else if (!result.ok) errMsg = result.message || 'Export failed';
@@ -466,6 +580,38 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
             <p className="export-dialog__hint">Music is trimmed to the video length with optional fade in/out.</p>
           </div>
 
+          <div className="export-dialog__row">
+            <span>Watermark</span>
+            <div className="export-dialog__music-row">
+              <button type="button" className="export-dialog__btn export-dialog__btn--secondary" onClick={async () => { const { path: p } = await window.timelapser.showWatermarkPicker(); if (p) setWatermarkPath(p); }}>
+                {watermarkPath ? 'Change watermark…' : 'Select watermark image…'}
+              </button>
+              {watermarkPath && (
+                <>
+                  <span className="export-dialog__music-name" title={watermarkPath}>
+                    {watermarkPath.split(/[/\\]/).pop()}
+                  </span>
+                  <select
+                    value={watermarkPosition}
+                    onChange={(e) => setWatermarkPosition(e.target.value as typeof watermarkPosition)}
+                    className="export-dialog__select-inline"
+                    style={{ marginLeft: 8 }}
+                  >
+                    <option value="top-left">Top left</option>
+                    <option value="top-right">Top right</option>
+                    <option value="bottom-left">Bottom left</option>
+                    <option value="bottom-right">Bottom right</option>
+                    <option value="center">Center</option>
+                  </select>
+                  <button type="button" className="export-dialog__btn export-dialog__btn--ghost" onClick={() => setWatermarkPath(null)}>
+                    Remove
+                  </button>
+                </>
+              )}
+            </div>
+            <p className="export-dialog__hint">Optional image overlaid on the export. Choose position when image is selected.</p>
+          </div>
+
           {audioPath && (
             <div className="export-dialog__fade-row">
               <label className="export-dialog__row export-dialog__row--small">
@@ -501,6 +647,8 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
               const estimatedMb = getEstimatedFileSizeMbForTarget(t, frameCount);
               const displayFps = t.fpsOverride ?? p.fps;
               const isGif = t.platformId === GIF_PRESET_ID;
+              const isLinkedInGif = t.platformId === LINKEDIN_GIF_PRESET_ID;
+              const isGifOrLinkedInGif = isGif || isLinkedInGif;
               return (
                 <div key={i} className="export-dialog__target-card">
                   <div className="export-dialog__target-card-header">
@@ -515,6 +663,7 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
                         </option>
                       ))}
                       <option value={GIF_PRESET_ID}>GIF</option>
+                      <option value={LINKEDIN_GIF_PRESET_ID}>LinkedIn (GIF) — max 5 MB, 500 frames</option>
                       <option value={CUSTOM_PRESET_ID}>Custom…</option>
                     </select>
                     {i > 0 && (
@@ -528,7 +677,7 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
                       </button>
                     )}
                   </div>
-                  {!isGif && (
+                  {!isGifOrLinkedInGif && (
                     <label className="export-dialog__row">
                       <span>Video format</span>
                       <select
@@ -541,74 +690,249 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
                       </select>
                     </label>
                   )}
-                  {isGif && (
+                  {isGifOrLinkedInGif && (() => {
+                    const gifOut = computeGifOutput(t, frameCount);
+                    const simpleSliders = t.gifSimpleSliders ?? false;
+                    const maxSizeSliderMax = isLinkedInGif ? 5 : 25;
+                    const maxFramesSliderMax = isLinkedInGif ? 500 : 1000;
+                    const resSliderMin = 240;
+                    const resSliderMax = 1080;
+                    const resSliderStep = 30;
+                    const resNum = typeof t.gifMaxDimension === 'number' ? Math.min(resSliderMax, Math.max(resSliderMin, t.gifMaxDimension)) : resSliderMax;
+                    return (
                     <>
-                      <label className="export-dialog__row">
-                        <span>Aspect ratio</span>
-                        <select
-                          value={t.gifAspectRatio ?? '9:16'}
-                          onChange={(e) => updateTarget(i, { gifAspectRatio: e.target.value as '16:9' | '9:16' })}
-                        >
-                          <option value="9:16">9:16 (portrait)</option>
-                          <option value="16:9">16:9 (landscape)</option>
-                        </select>
-                      </label>
-                      <label className="export-dialog__row">
-                        <span>Max dimension</span>
-                        <select
-                          value={t.gifMaxDimension ?? 720}
-                          onChange={(e) => updateTarget(i, { gifMaxDimension: (e.target.value === 'full' ? 'full' : parseInt(e.target.value, 10)) as GifMaxDimension })}
-                        >
-                          <option value={480}>480px</option>
-                          <option value={720}>720px</option>
-                          <option value={1080}>1080px</option>
-                          <option value="full">Full</option>
-                        </select>
-                      </label>
-                      <div className="export-dialog__row">
-                        <span>Quality</span>
-                        <div className="export-dialog__slider-row">
-                          <span className="export-dialog__slider-label">Smaller file</span>
-                          <input
-                            type="range"
-                            min={0}
-                            max={100}
-                            value={t.gifQuality ?? 70}
-                            onChange={(e) => updateTarget(i, { gifQuality: parseInt(e.target.value, 10) })}
-                            className="export-dialog__slider"
-                          />
-                          <span className="export-dialog__slider-label">Larger file</span>
-                        </div>
-                      </div>
-                      <label className="export-dialog__row">
-                        <span>FPS</span>
+                      {isLinkedInGif && !simpleSliders && (
+                        <p className="export-dialog__hint" style={{ marginBottom: 6 }}>LinkedIn: max 5 MB, 500 frames. Settings below are limited accordingly.</p>
+                      )}
+                      <label className="export-dialog__row export-dialog__row--check">
                         <input
-                          type="number"
-                          min={1}
-                          max={30}
-                          value={displayFps}
-                          onChange={(e) => updateTarget(i, { fpsOverride: parseInt(e.target.value, 10) || undefined })}
+                          type="checkbox"
+                          checked={simpleSliders}
+                          onChange={(e) => updateTarget(i, { gifSimpleSliders: e.target.checked })}
                         />
+                        <span>Use simple sliders (target size, frames, resolution, FPS)</span>
                       </label>
-                      <div className="export-dialog__row">
-                        <span>Max file size</span>
-                        <select
-                          value={(t.maxFileSizeMb ?? DEFAULT_TARGET_OPTIONS.maxFileSizeMb) != null ? String(t.maxFileSizeMb ?? DEFAULT_TARGET_OPTIONS.maxFileSizeMb) : 'none'}
-                          onChange={(e) => {
-                            const v = e.target.value;
-                            updateTarget(i, { maxFileSizeMb: v === 'none' ? null : parseFloat(v) });
-                          }}
-                        >
-                          <option value="none">No limit</option>
-                          <option value="5">5 MB</option>
-                          <option value="9.9">9.9 MB (Discord)</option>
-                          <option value="25">25 MB</option>
-                          <option value="50">50 MB</option>
-                          <option value="100">100 MB</option>
-                        </select>
-                      </div>
+                      {simpleSliders ? (
+                        <div className="export-dialog__gif-simple">
+                          <label className="export-dialog__row">
+                            <span>Aspect ratio</span>
+                            <select
+                              value={t.gifAspectRatio ?? (isLinkedInGif ? '16:9' : '9:16')}
+                              onChange={(e) => updateTarget(i, { gifAspectRatio: e.target.value as '16:9' | '9:16' })}
+                            >
+                              <option value="9:16">9:16 (portrait)</option>
+                              <option value="16:9">16:9 (landscape)</option>
+                            </select>
+                          </label>
+                          <div className="export-dialog__row">
+                            <span>Target file size (MB)</span>
+                            <div className="export-dialog__slider-row">
+                              <input
+                                type="range"
+                                min={0.5}
+                                max={maxSizeSliderMax}
+                                step={0.5}
+                                value={t.maxFileSizeMb != null && t.maxFileSizeMb > 0 ? Math.min(maxSizeSliderMax, t.maxFileSizeMb) : maxSizeSliderMax}
+                                onChange={(e) => updateTarget(i, { maxFileSizeMb: parseFloat(e.target.value) })}
+                                className="export-dialog__slider"
+                              />
+                              <span className="export-dialog__slider-value">
+                                {t.maxFileSizeMb != null && t.maxFileSizeMb > 0 ? `${t.maxFileSizeMb} MB` : 'No limit'}
+                              </span>
+                            </div>
+                            {!isLinkedInGif && (
+                              <label className="export-dialog__row--check" style={{ marginTop: 4 }}>
+                                <input
+                                  type="checkbox"
+                                  checked={t.maxFileSizeMb == null || t.maxFileSizeMb <= 0}
+                                  onChange={(e) => updateTarget(i, { maxFileSizeMb: e.target.checked ? null : 5 })}
+                                />
+                                <span>No limit</span>
+                              </label>
+                            )}
+                          </div>
+                          <div className="export-dialog__row">
+                            <span>Number of frames</span>
+                            <div className="export-dialog__slider-row">
+                              <input
+                                type="range"
+                                min={10}
+                                max={maxFramesSliderMax}
+                                step={10}
+                                value={Math.min(maxFramesSliderMax, (t.gifMaxFrames ?? 0) || 300)}
+                                onChange={(e) => updateTarget(i, { gifMaxFrames: parseInt(e.target.value, 10) })}
+                                className="export-dialog__slider"
+                              />
+                              <span className="export-dialog__slider-value">{(t.gifMaxFrames ?? 0) === 0 ? 'No limit' : (t.gifMaxFrames ?? 300)}</span>
+                            </div>
+                            {!isLinkedInGif && (
+                              <label className="export-dialog__row--check" style={{ marginTop: 4 }}>
+                                <input
+                                  type="checkbox"
+                                  checked={(t.gifMaxFrames ?? 0) === 0}
+                                  onChange={(e) => updateTarget(i, { gifMaxFrames: e.target.checked ? 0 : 300 })}
+                                />
+                                <span>No limit</span>
+                              </label>
+                            )}
+                          </div>
+                          <div className="export-dialog__row">
+                            <span>Resolution (min. long side)</span>
+                            <div className="export-dialog__slider-row">
+                              <input
+                                type="range"
+                                min={resSliderMin}
+                                max={resSliderMax}
+                                step={resSliderStep}
+                                value={resNum}
+                                disabled={t.gifMaxDimension === 'full'}
+                                onChange={(e) => updateTarget(i, { gifMaxDimension: parseInt(e.target.value, 10) })}
+                                className="export-dialog__slider"
+                              />
+                              <span className="export-dialog__slider-value">
+                                {t.gifMaxDimension === 'full' ? 'Full' : `${resNum}px`}
+                              </span>
+                            </div>
+                            <label className="export-dialog__row--check" style={{ marginTop: 4 }}>
+                              <input
+                                type="checkbox"
+                                checked={t.gifMaxDimension === 'full'}
+                                onChange={(e) => updateTarget(i, { gifMaxDimension: e.target.checked ? 'full' : resNum })}
+                              />
+                              <span>Full resolution (no cap)</span>
+                            </label>
+                          </div>
+                          <div className="export-dialog__row">
+                            <span>FPS</span>
+                            <div className="export-dialog__slider-row">
+                              <input
+                                type="range"
+                                min={5}
+                                max={15}
+                                step={1}
+                                value={displayFps}
+                                onChange={(e) => updateTarget(i, { fpsOverride: parseInt(e.target.value, 10) })}
+                                className="export-dialog__slider"
+                              />
+                              <span className="export-dialog__slider-value">{displayFps}</span>
+                            </div>
+                          </div>
+                          <div className="export-dialog__row">
+                            <span>Quality</span>
+                            <div className="export-dialog__slider-row">
+                              <span className="export-dialog__slider-label">Smaller</span>
+                              <input
+                                type="range"
+                                min={0}
+                                max={100}
+                                value={t.gifQuality ?? 70}
+                                onChange={(e) => updateTarget(i, { gifQuality: parseInt(e.target.value, 10) })}
+                                className="export-dialog__slider"
+                              />
+                              <span className="export-dialog__slider-label">Larger</span>
+                            </div>
+                          </div>
+                        </div>
+                      ) : (
+                        <>
+                          <label className="export-dialog__row">
+                            <span>Aspect ratio</span>
+                            <select
+                              value={t.gifAspectRatio ?? '9:16'}
+                              onChange={(e) => updateTarget(i, { gifAspectRatio: e.target.value as '16:9' | '9:16' })}
+                            >
+                              <option value="9:16">9:16 (portrait)</option>
+                              <option value="16:9">16:9 (landscape)</option>
+                            </select>
+                          </label>
+                          <label className="export-dialog__row">
+                            <span>Max dimension</span>
+                            <select
+                              value={t.gifMaxDimension === 'full' ? 'full' : (typeof t.gifMaxDimension === 'number' && [480, 720, 1080].includes(t.gifMaxDimension) ? t.gifMaxDimension : (isLinkedInGif ? 1080 : 720))}
+                              onChange={(e) => updateTarget(i, { gifMaxDimension: (e.target.value === 'full' ? 'full' : parseInt(e.target.value, 10)) as GifMaxDimension })}
+                            >
+                              <option value={480}>480px</option>
+                              <option value={720}>720px</option>
+                              <option value={1080}>1080px</option>
+                              <option value="full">Full</option>
+                            </select>
+                          </label>
+                          <div className="export-dialog__row">
+                            <span>Quality</span>
+                            <div className="export-dialog__slider-row">
+                              <span className="export-dialog__slider-label">Smaller file</span>
+                              <input
+                                type="range"
+                                min={0}
+                                max={100}
+                                value={t.gifQuality ?? 70}
+                                onChange={(e) => updateTarget(i, { gifQuality: parseInt(e.target.value, 10) })}
+                                className="export-dialog__slider"
+                              />
+                              <span className="export-dialog__slider-label">Larger file</span>
+                            </div>
+                          </div>
+                          <label className="export-dialog__row">
+                            <span>FPS</span>
+                            <input
+                              type="number"
+                              min={1}
+                              max={30}
+                              value={displayFps}
+                              onChange={(e) => updateTarget(i, { fpsOverride: parseInt(e.target.value, 10) || undefined })}
+                            />
+                          </label>
+                          <div className="export-dialog__row">
+                            <span>Max file size</span>
+                            <select
+                              value={(t.maxFileSizeMb ?? (isLinkedInGif ? LINKEDIN_GIF_MAX_SIZE_MB : DEFAULT_TARGET_OPTIONS.maxFileSizeMb)) != null ? String(t.maxFileSizeMb ?? (isLinkedInGif ? LINKEDIN_GIF_MAX_SIZE_MB : DEFAULT_TARGET_OPTIONS.maxFileSizeMb)) : 'none'}
+                              onChange={(e) => {
+                                const v = e.target.value;
+                                updateTarget(i, { maxFileSizeMb: v === 'none' ? null : parseFloat(v) });
+                              }}
+                            >
+                              <option value="none">No limit</option>
+                              <option value="5">5 MB (LinkedIn max)</option>
+                              <option value="9.9">9.9 MB (Discord)</option>
+                              <option value="25">25 MB</option>
+                              <option value="50">50 MB</option>
+                              <option value="100">100 MB</option>
+                            </select>
+                          </div>
+                          {isLinkedInGif && (
+                            <label className="export-dialog__row">
+                              <span>Max frames</span>
+                              <input
+                                type="number"
+                                min={1}
+                                max={500}
+                                value={t.gifMaxFrames ?? LINKEDIN_GIF_MAX_FRAMES}
+                                onChange={(e) => updateTarget(i, { gifMaxFrames: Math.max(1, Math.min(500, parseInt(e.target.value, 10) || 500)) })}
+                              />
+                              <span className="export-dialog__hint-inline">LinkedIn allows up to 500 frames.</span>
+                            </label>
+                          )}
+                        </>
+                      )}
+                      {gifOut && (
+                        <div className="export-dialog__gif-result">
+                          <p className="export-dialog__gif-result-title">Result preview</p>
+                          <ul className="export-dialog__gif-result-list">
+                            <li>Output frames: <strong>{gifOut.numFrames.toLocaleString()}</strong></li>
+                            <li>Output FPS: <strong>{gifOut.outFps}</strong></li>
+                            <li>Resolution: <strong>{gifOut.outW}×{gifOut.outH}</strong></li>
+                            <li>Duration: <strong>~{gifOut.durationSec.toFixed(1)}s</strong></li>
+                            <li>Est. file size: <strong>~{gifOut.estimatedSizeMb < 1 ? gifOut.estimatedSizeMb.toFixed(2) : gifOut.estimatedSizeMb.toFixed(1)} MB</strong></li>
+                          </ul>
+                          {isLinkedInGif && gifOut.estimatedSizeMb > LINKEDIN_GIF_MAX_SIZE_MB && (
+                            <p className="export-dialog__hint export-dialog__gif-result-warn">Over 5 MB – reduce resolution or frames to stay under LinkedIn limit.</p>
+                          )}
+                        </div>
+                      )}
+                      <p className="export-dialog__hint">Lower resolution → smaller file or more frames. Fewer frames → smaller file, shorter clip. Higher FPS → longer duration, often larger file.</p>
                     </>
-                  )}
+                    );
+                  })()}
                   {t.platformId === CUSTOM_PRESET_ID && t.customPreset && (
                     <div className="export-dialog__custom-preset">
                       <label className="export-dialog__row export-dialog__row--small">
@@ -652,7 +976,7 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
                       </label>
                     </div>
                   )}
-                  {!isGif && (t.platformId !== CUSTOM_PRESET_ID) && (
+                  {!isGifOrLinkedInGif && (t.platformId !== CUSTOM_PRESET_ID) && (
                     <label className="export-dialog__row">
                       <span>Output FPS</span>
                       <input
@@ -664,7 +988,7 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
                       />
                     </label>
                   )}
-                  {!isGif && (
+                  {!isGifOrLinkedInGif && (
                     <>
                       <label className="export-dialog__row">
                         <span>Target video length (s)</span>
@@ -731,6 +1055,17 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
                       </div>
                     </>
                   )}
+                  <label className="export-dialog__row">
+                    <span>Hold last frame (extra frames)</span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={3000}
+                      value={t.duplicateLastFrameCount ?? 0}
+                      onChange={(e) => updateTarget(i, { duplicateLastFrameCount: Math.max(0, parseInt(e.target.value, 10) || 0) })}
+                    />
+                    <span className="export-dialog__hint-inline">0 = off. Adds this many copies of the last frame at the end.</span>
+                  </label>
                   <div className="export-dialog__save-as">
                     <input
                       type="text"

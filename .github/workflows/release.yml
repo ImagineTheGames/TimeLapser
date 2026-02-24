@@ -58,13 +58,14 @@ jobs:
           name: TimeLapser-Windows-${{ github.sha }}
           path: release/
 
-      - name: Create GitHub Release (notes only; electron-builder already uploads the installer)
+      - name: Create GitHub Release (with notes; electron-builder uploads the installer)
         id: gh_release
         if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name != '')
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name || github.ref_name }}
           name: Release ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name || github.ref_name }}
-          generate_release_notes: true
+          body_path: release-notes/${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name || github.ref_name }}.md
+          generate_release_notes: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
