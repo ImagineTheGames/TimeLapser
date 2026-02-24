@@ -220,6 +220,34 @@
   background: rgba(248, 113, 113, 0.1);
 }
 
+.export-dialog__target-card {
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 12px;
+  background: rgba(30, 41, 59, 0.3);
+}
+
+.export-dialog__target-card-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.export-dialog__target-card-header select {
+  width: 200px;
+}
+
+.export-dialog__target-summary {
+  font-size: 12px;
+  color: #94a3b8;
+  margin: 10px 0 0;
+  padding-top: 8px;
+  border-top: 1px solid rgba(148, 163, 184, 0.15);
+}
+
 .export-dialog__target {
   display: flex;
   flex-wrap: wrap;
@@ -229,7 +257,25 @@
 }
 
 .export-dialog__target select {
-  width: 160px;
+  width: 200px;
+}
+
+.export-dialog__custom-preset {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  width: 100%;
+  margin-bottom: 8px;
+  padding: 8px 0;
+}
+
+.export-dialog__custom-preset .export-dialog__row--small {
+  flex: 0 0 auto;
+  min-width: 80px;
+}
+
+.export-dialog__custom-preset .export-dialog__row--small input {
+  width: 72px;
 }
 
 .export-dialog__fade-row {

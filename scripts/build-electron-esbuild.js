@@ -10,8 +10,10 @@ if (!fs.existsSync(distElectron)) {
 }
 
 const esbuild = (input, output) => {
+  const inputNorm = input.replace(/\\/g, '/');
+  const outputNorm = output.replace(/\\/g, '/');
   execSync(
-    `npx esbuild "${input}" --outfile="${output}" --platform=node --format=cjs --packages=external`,
+    `npx esbuild "${inputNorm}" --outfile="${outputNorm}" --platform=node --format=cjs --packages=external`,
     { cwd: root, stdio: 'inherit' }
   );
 };

@@ -9,6 +9,26 @@
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
   backdrop-filter: blur(12px);
   z-index: 10;
+  scrollbar-color: rgba(148, 163, 184, 0.4) rgba(30, 41, 59, 0.5);
+  scrollbar-width: thin;
+}
+
+.settings-panel::-webkit-scrollbar {
+  width: 10px;
+}
+
+.settings-panel::-webkit-scrollbar-track {
+  background: rgba(30, 41, 59, 0.5);
+  border-radius: 4px;
+}
+
+.settings-panel::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.4);
+  border-radius: 4px;
+}
+
+.settings-panel::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.55);
 }
 
 .settings-panel--inline {

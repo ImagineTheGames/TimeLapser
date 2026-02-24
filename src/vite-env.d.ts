@@ -22,10 +22,10 @@ interface TimeLapserAPI {
   exportVideo: (args: ExportVideoArgs) => Promise<{ ok: boolean; path?: string; message?: string }>;
   reportRendererError: (message: string, stack?: string) => void;
   logFromRenderer: (message: string) => void;
-  setOverlayExpanded: (expanded: boolean) => void;
+  setOverlayExpanded: (expanded: boolean) => Promise<{ panelOnRight: boolean }>;
   setOverlayHeight: (height: number) => void;
   closeOverlay: () => void;
-  getOverlayBoundsAndWorkArea: () => Promise<{ bounds: { x: number; y: number; width: number; height: number }; workArea: { x: number; y: number; width: number; height: number } }>;
+  getOverlayBoundsAndWorkArea: () => Promise<{ bounds: { x: number; y: number; width: number; height: number }; workArea: { x: number; y: number; width: number; height: number }; panelOnRight?: boolean }>;
   startRegionPick: () => Promise<void>;
   onRegionPicked: (callback: (region: { x: number; y: number; width: number; height: number } | null) => void) => () => void;
 }

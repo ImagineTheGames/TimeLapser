@@ -89,7 +89,7 @@ function ensureOverlayWindow() {
   const { width, height } = screen.getPrimaryDisplay().workAreaSize;
   overlayWindow = new BrowserWindow({
     width: 420,
-    height: 88,
+    height: OVERLAY_HEIGHT_COLLAPSED,
     x: Math.max(0, width - 440),
     y: Math.max(0, height - 80),
     show: true,
@@ -408,24 +408,27 @@ ipcMain.on('region-pick-cancel', () => {
 ipcMain.handle('get-overlay-bounds-and-work-area', () => {
   if (!overlayWindow || overlayWindow.isDestroyed()) {
     const workArea = screen.getPrimaryDisplay().workArea;
-    return { bounds: { x: workArea.width - 440, y: workArea.height - 100, width: 420, height: 88 }, workArea };
+    return { bounds: { x: workArea.width - 440, y: workArea.height - 100, width: 420, height: 120 }, workArea, panelOnRight: false };
   }
   const bounds = overlayWindow.getBounds();
   const display = screen.getDisplayMatching(bounds);
-  return { bounds, workArea: display.workArea };
+  return { bounds, workArea: display.workArea, panelOnRight: overlayPanelOnRight };
 });
 
 const OVERLAY_WIDTH = 420;
-const OVERLAY_HEIGHT_COLLAPSED = 88;
+const OVERLAY_HEIGHT_COLLAPSED = 120;
 const OVERLAY_HEIGHT_SETTINGS = 540;
 const OVERLAY_HEIGHT_EXPORT = 720;
 const MARGIN = 20;
 const SETTINGS_PANEL_WIDTH = 380;
-const SETTINGS_PANEL_GAP = 20;
+const SETTINGS_PANEL_GAP = 10;
 const OVERLAY_WIDTH_WITH_PANEL = OVERLAY_WIDTH + SETTINGS_PANEL_WIDTH + SETTINGS_PANEL_GAP;
 
-/** Set overlay size and position. When expandedWithPanel, window widens so settings panel sits to the left of the bar (bar stays in place). Expands upward when near bottom, downward when near top. If expandedWithPanel is undefined, current width is preserved (e.g. when only height changes). */
-function setOverlayBoundsAndSize(newHeight: number, expandedWithPanel?: boolean) {
+/** When expanded, true = panel is to the right of the bar (window grew right); false = panel to the left (window grew left). */
+let overlayPanelOnRight = false;
+
+/** Set overlay size and position. When expandedWithPanel, window widens so settings stay close to the bar. Prefers panel to the left of the bar; if not enough room (near left edge), keeps window position and puts panel to the right so the bar does not move. */
+function setOverlayBoundsAndSize(newHeight: number, expandedWithPanel?: boolean): void {
   if (!overlayWindow || overlayWindow.isDestroyed()) return;
   const bounds = overlayWindow.getBounds();
   let x = bounds.x;
@@ -440,41 +443,50 @@ function setOverlayBoundsAndSize(newHeight: number, expandedWithPanel?: boolean)
   try {
     const display = screen.getDisplayMatching(bounds);
     const workArea = display.workArea;
-    const bottomOfWorkArea = workArea.y + workArea.height;
-    const wouldGoOffBottom = y + h > bottomOfWorkArea - MARGIN;
-    const nearTop = y < workArea.y + 150;
-    if (wouldGoOffBottom && !nearTop) {
-      y = workArea.y + workArea.height - h - MARGIN;
-      if (y < workArea.y) y = workArea.y;
-    }
-    if (y < workArea.y) y = workArea.y;
-    if (y + h > bottomOfWorkArea - MARGIN) y = bottomOfWorkArea - h - MARGIN;
+    const waLeft = workArea.x;
+    const waTop = workArea.y;
+    const waRight = workArea.x + workArea.width;
+    const waBottom = workArea.y + workArea.height;
+
     if (expandedWithPanel === true) {
       const barRight = bounds.x + bounds.width;
-      x = barRight - OVERLAY_WIDTH_WITH_PANEL;
-      x = Math.max(workArea.x, x);
-      if (x + width > workArea.x + workArea.width - MARGIN) x = workArea.x + workArea.width - width - MARGIN;
+      const idealX = barRight - OVERLAY_WIDTH_WITH_PANEL;
+      if (idealX >= waLeft + MARGIN) {
+        x = idealX;
+        overlayPanelOnRight = false;
+      } else {
+        x = bounds.x;
+        overlayPanelOnRight = true;
+      }
     } else if (expandedWithPanel === false) {
-      if (bounds.width > OVERLAY_WIDTH) x = bounds.x + (bounds.width - OVERLAY_WIDTH);
-      if (x + width > workArea.x + workArea.width - MARGIN) x = workArea.x + workArea.width - width - MARGIN;
-      if (x < workArea.x) x = workArea.x;
+      x = overlayPanelOnRight
+        ? bounds.x
+        : bounds.x + (bounds.width - OVERLAY_WIDTH);
+      overlayPanelOnRight = false;
     }
+
+    // Clamp: keep fully inside work area with margin on all sides
+    if (x + width > waRight - MARGIN) x = waRight - width - MARGIN;
+    if (x < waLeft + MARGIN) x = waLeft + MARGIN;
+    if (y + h > waBottom - MARGIN) y = waBottom - h - MARGIN;
+    if (y < waTop + MARGIN) y = waTop + MARGIN;
+
     overlayWindow.setBounds({ x, y, width, height: h }, false);
-    log('Overlay bounds:', x, y, width, h);
+    log('Overlay bounds:', x, y, width, h, 'panelOnRight:', overlayPanelOnRight);
   } catch (err) {
     log('setOverlayBoundsAndSize failed:', (err as Error).message);
     overlayWindow.setSize(width, h);
   }
 }
 
-ipcMain.on('set-overlay-expanded', (e, expanded: boolean) => {
+ipcMain.handle('set-overlay-expanded', (_e, expanded: boolean): { panelOnRight: boolean } => {
   const hasOverlay = !!overlayWindow && !overlayWindow.isDestroyed();
-  const senderIsOverlay = hasOverlay && e.sender === overlayWindow!.webContents;
-  log('set-overlay-expanded received', 'expanded=', expanded, 'hasOverlay=', hasOverlay, 'senderIsOverlay=', senderIsOverlay);
-  if (!senderIsOverlay) return;
+  if (!hasOverlay) return { panelOnRight: false };
+  log('set-overlay-expanded', 'expanded=', expanded);
   const height = expanded ? OVERLAY_HEIGHT_SETTINGS : OVERLAY_HEIGHT_COLLAPSED;
   setOverlayBoundsAndSize(height, expanded);
-  log('Overlay expanded:', expanded, 'width:', expanded ? OVERLAY_WIDTH_WITH_PANEL : OVERLAY_WIDTH, 'height:', height);
+  log('Overlay expanded:', expanded, 'width:', expanded ? OVERLAY_WIDTH_WITH_PANEL : OVERLAY_WIDTH, 'height:', height, 'panelOnRight:', overlayPanelOnRight);
+  return { panelOnRight: overlayPanelOnRight };
 });
 
 ipcMain.on('set-overlay-height', (e, height: number) => {
@@ -822,8 +834,9 @@ ipcMain.handle('export-video', async (_e, args: {
       }
       if (cropToFit) {
         vfParts.push(`scale=${width}:${height}:force_original_aspect_ratio=increase`, `crop=${width}:${height}`);
-      } else if (vfParts.length > 0) {
-        vfParts.push(`scale=${width}:${height}`);
+      } else {
+        // Fit inside resolution (letterbox/pillarbox), no crop — matches preview when "Crop to fit" is unchecked
+        vfParts.push(`scale=${width}:${height}:force_original_aspect_ratio=decrease`, `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2`);
       }
       if (vfParts.length > 0) {
         chain.outputOptions(['-vf', vfParts.join(',')]);

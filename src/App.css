@@ -6,7 +6,7 @@
   display: flex;
   align-items: flex-start;
   min-height: 100vh;
-  padding: 12px 12px 12px 12px;
+  padding: 0;
 }
 
 .app__panel-wrap {
@@ -15,8 +15,8 @@
 }
 
 .app__gap {
-  flex: 0 0 20px;
-  width: 20px;
+  flex: 0 0 10px;
+  width: 10px;
 }
 
 .app__bar-wrap {

@@ -3,71 +3,97 @@ import './ExportDialog.css';
 
 const ENCODING_BY_FORMAT: Record<string, string> = { mp4: 'H.264', mov: 'H.264', webm: 'VP9' };
 
-export const SOCIAL_PRESETS = [
-  {
-    id: 'instagram_reels',
-    name: 'Instagram Reels',
-    maxDurationSeconds: 90,
-    width: 1080,
-    height: 1920,
-    aspectRatio: '9:16',
-    fps: 30,
-  },
-  {
-    id: 'instagram_stories',
-    name: 'Instagram Stories',
-    maxDurationSeconds: 60,
-    width: 1080,
-    height: 1920,
-    aspectRatio: '9:16',
-    fps: 30,
-  },
-  {
-    id: 'youtube_shorts',
-    name: 'YouTube Shorts',
-    maxDurationSeconds: 60,
-    width: 1080,
-    height: 1920,
-    aspectRatio: '9:16',
-    fps: 30,
-  },
-  {
-    id: 'youtube_standard',
-    name: 'YouTube (16:9)',
-    maxDurationSeconds: 0,
-    width: 1920,
-    height: 1080,
-    aspectRatio: '16:9',
-    fps: 30,
-  },
-  {
-    id: 'tiktok',
-    name: 'TikTok',
-    maxDurationSeconds: 180,
-    width: 1080,
-    height: 1920,
-    aspectRatio: '9:16',
-    fps: 30,
-  },
-  {
-    id: 'facebook_reels',
-    name: 'Facebook Reels',
-    maxDurationSeconds: 90,
-    width: 1080,
-    height: 1920,
-    aspectRatio: '9:16',
-    fps: 30,
-  },
-  {
-    id: 'facebook_stories',
-    name: 'Facebook Stories',
-    maxDurationSeconds: 60,
-    width: 1440,
-    height: 2560,
-    aspectRatio: '9:16',
-    fps: 30,
-  },
-] as const;
+export const CUSTOM_PRESET_ID = 'custom';
+
+export type Preset = {
+  id: string;
+  name: string;
+  maxDurationSeconds: number;
+  width: number;
+  height: number;
+  aspectRatio: string;
+  fps: number;
+};
+
+export const SOCIAL_PRESETS: Preset[] = [
+  { id: 'instagram_reels', name: 'Instagram Reels', maxDurationSeconds: 90, width: 1080, height: 1920, aspectRatio: '9:16', fps: 30 },
+  { id: 'instagram_stories', name: 'Instagram Stories', maxDurationSeconds: 60, width: 1080, height: 1920, aspectRatio: '9:16', fps: 30 },
+  { id: 'youtube_shorts', name: 'YouTube Shorts', maxDurationSeconds: 60, width: 1080, height: 1920, aspectRatio: '9:16', fps: 30 },
+  { id: 'youtube_standard', name: 'YouTube (16:9)', maxDurationSeconds: 0, width: 1920, height: 1080, aspectRatio: '16:9', fps: 30 },
+  { id: 'tiktok', name: 'TikTok', maxDurationSeconds: 180, width: 1080, height: 1920, aspectRatio: '9:16', fps: 30 },
+  { id: 'facebook_reels', name: 'Facebook Reels', maxDurationSeconds: 90, width: 1080, height: 1920, aspectRatio: '9:16', fps: 30 },
+  { id: 'facebook_stories', name: 'Facebook Stories', maxDurationSeconds: 60, width: 1440, height: 2560, aspectRatio: '9:16', fps: 30 },
+];
+
+const DEFAULT_CUSTOM_PRESET = { width: 1920, height: 1080, fps: 30, maxDurationSeconds: 0 };
+
+const DEFAULT_TARGET_OPTIONS = {
+  speedToFit: true,
+  cropToFit: true,
+  quality: 70,
+  maxFileSizeMb: null as number | null,
+};
+
+export interface ExportTarget {
+  platformId: string;
+  outputPath: string;
+  customPreset?: { width: number; height: number; fps: number; maxDurationSeconds: number };
+  /** Override FPS for any platform; when undefined, use preset FPS. */
+  fpsOverride?: number;
+  /** When set (e.g. 60), video length is fixed to this many seconds; FPS is derived. Overrides speed-to-fit and FPS. */
+  targetDurationSeconds?: number | null;
+  speedToFit?: boolean;
+  cropToFit?: boolean;
+  quality?: number;
+  maxFileSizeMb?: number | null;
+}
+
+function getPresetForTarget(t: ExportTarget): Preset {
+  if (t.platformId === CUSTOM_PRESET_ID && t.customPreset) {
+    const { width, height, fps, maxDurationSeconds } = t.customPreset;
+    const aspectRatio = width >= height ? '16:9' : '9:16';
+    return { id: CUSTOM_PRESET_ID, name: 'Custom', maxDurationSeconds, width, height, aspectRatio, fps };
+  }
+  return SOCIAL_PRESETS.find((p) => p.id === t.platformId) ?? SOCIAL_PRESETS[0];
+}
+
+function getEffectiveFpsForTarget(t: ExportTarget, frameCount: number): number {
+  if (frameCount <= 0) return 30;
+  if (t.targetDurationSeconds != null && t.targetDurationSeconds > 0) {
+    return Math.max(1, frameCount / t.targetDurationSeconds);
+  }
+  const preset = getPresetForTarget(t);
+  const speedToFit = t.speedToFit ?? DEFAULT_TARGET_OPTIONS.speedToFit;
+  if (speedToFit && preset.maxDurationSeconds > 0) {
+    return Math.max(1, frameCount / preset.maxDurationSeconds);
+  }
+  return t.fpsOverride ?? preset.fps;
+}
+
+function getDurationSecForTarget(t: ExportTarget, frameCount: number): number {
+  if (frameCount <= 0) return 0;
+  return frameCount / getEffectiveFpsForTarget(t, frameCount);
+}
+
+function getEstimatedFileSizeMbForTarget(
+  t: ExportTarget,
+  frameCount: number,
+  format: 'mp4' | 'webm' | 'mov'
+): number | null {
+  if (frameCount <= 0) return null;
+  const durationSec = getDurationSecForTarget(t, frameCount);
+  const preset = getPresetForTarget(t);
+  const quality = t.quality ?? DEFAULT_TARGET_OPTIONS.quality;
+  const maxFileSizeMb = t.maxFileSizeMb ?? DEFAULT_TARGET_OPTIONS.maxFileSizeMb;
+  const pixels = preset.width * preset.height;
+  const refPixels = 1920 * 1080;
+  const baseMbps = format === 'webm'
+    ? (2 + (quality / 100) * 5) * 0.75
+    : 2 + (quality / 100) * 6;
+  let estimatedMb = (durationSec * baseMbps * 1e6 / 8) * (pixels / refPixels) / (1024 * 1024);
+  if (maxFileSizeMb != null && maxFileSizeMb > 0) estimatedMb = Math.min(estimatedMb, maxFileSizeMb);
+  return estimatedMb;
+}
 
 interface ExportDialogProps {
   sessionFolder: string | null;
@@ -77,10 +103,7 @@ interface ExportDialogProps {
 export default function ExportDialog({ sessionFolder: initialSessionFolder, onClose }: ExportDialogProps) {
   const [sessions, setSessions] = useState<Array<{ path: string; name: string }>>([]);
   const [selectedSessionFolder, setSelectedSessionFolder] = useState<string>(initialSessionFolder ?? '');
-  const [platformId, setPlatformId] = useState<string>(SOCIAL_PRESETS[0].id);
   const [format, setFormat] = useState<'mp4' | 'webm' | 'mov'>('mp4');
-  const [speedToFit, setSpeedToFit] = useState(true);
-  const [customFps, setCustomFps] = useState(30);
   const [outputPath, setOutputPath] = useState('');
   const [audioPath, setAudioPath] = useState<string | null>(null);
   const [fadeInSeconds, setFadeInSeconds] = useState(0);
@@ -90,14 +113,15 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
   const [message, setMessage] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [frameCount, setFrameCount] = useState(0);
   const [firstFrameDataUrl, setFirstFrameDataUrl] = useState<string | null>(null);
-  const [cropToFit, setCropToFit] = useState(true);
-  /** Max file size in MB, or null for no limit. */
-  const [maxFileSizeMb, setMaxFileSizeMb] = useState<number | null>(null);
-  /** Quality 0–100 (higher = less compression, larger file). */
-  const [quality, setQuality] = useState(70);
+  /** Aspect ratio for preview only: 16:9 or 9:16. */
+  const [previewAspectRatio, setPreviewAspectRatio] = useState<'16:9' | '9:16'>('9:16');
 
-  const [targets, setTargets] = useState<Array<{ platformId: string; outputPath: string }>>([
-    { platformId: SOCIAL_PRESETS[0].id, outputPath: '' },
+  const [targets, setTargets] = useState<ExportTarget[]>([
+    {
+      platformId: SOCIAL_PRESETS[0].id,
+      outputPath: '',
+      ...DEFAULT_TARGET_OPTIONS,
+    },
   ]);
 
   useEffect(() => {
@@ -122,14 +146,13 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
     });
   }, [selectedSessionFolder]);
 
-  const previewPreset = SOCIAL_PRESETS.find((p) => p.id === platformId) ?? SOCIAL_PRESETS[0];
-  const preset = previewPreset;
-
-  /** Preview box size so aspect ratio is correct (9:16 = tall, 16:9 = wide). Max 220px on the longer side. */
+  /** Preview dimensions from aspect ratio only (16:9 or 9:16). */
+  const previewWidth = previewAspectRatio === '16:9' ? 1920 : 1080;
+  const previewHeight = previewAspectRatio === '16:9' ? 1080 : 1920;
   const previewSize =
-    preset.width >= preset.height
-      ? { width: 220, height: Math.round((preset.height * 220) / preset.width) }
-      : { width: Math.round((preset.width * 220) / preset.height), height: 220 };
+    previewWidth >= previewHeight
+      ? { width: 220, height: Math.round((previewHeight * 220) / previewWidth) }
+      : { width: Math.round((previewWidth * 220) / previewHeight), height: 220 };
 
   /** Returns path with (1), (2), ... before extension so it doesn't overwrite existing. */
   const getNextUniquePath = (basePath: string, existingPaths: string[]): string => {
@@ -146,14 +169,55 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
     const last = targets[targets.length - 1];
     const existingPaths = targets.map((t) => t.outputPath).filter(Boolean) as string[];
     const newPath = getNextUniquePath(last?.outputPath || outputPath || 'export.mp4', existingPaths);
-    setTargets([...targets, { platformId: last?.platformId ?? SOCIAL_PRESETS[0].id, outputPath: newPath }]);
+    const newTarget: ExportTarget = {
+      platformId: last?.platformId ?? SOCIAL_PRESETS[0].id,
+      outputPath: newPath,
+      ...(last?.platformId === CUSTOM_PRESET_ID && last?.customPreset ? { customPreset: { ...last.customPreset } } : {}),
+      fpsOverride: last?.fpsOverride,
+      targetDurationSeconds: last?.targetDurationSeconds ?? undefined,
+      speedToFit: last?.speedToFit ?? DEFAULT_TARGET_OPTIONS.speedToFit,
+      cropToFit: last?.cropToFit ?? DEFAULT_TARGET_OPTIONS.cropToFit,
+      quality: last?.quality ?? DEFAULT_TARGET_OPTIONS.quality,
+      maxFileSizeMb: last?.maxFileSizeMb ?? DEFAULT_TARGET_OPTIONS.maxFileSizeMb,
+    };
+    setTargets([...targets, newTarget]);
   };
+
+  const copyFromPrevious = (i: number) => {
+    if (i <= 0) return;
+    const prev = targets[i - 1];
+    const existingPaths = targets.map((t) => t.outputPath).filter(Boolean) as string[];
+    const newPath = getNextUniquePath(prev.outputPath || outputPath || 'export.mp4', existingPaths);
+    setTargets(targets.map((t, idx) => {
+      if (idx !== i) return t;
+      return {
+        ...t,
+        platformId: prev.platformId,
+        customPreset: prev.customPreset ? { ...prev.customPreset } : undefined,
+        fpsOverride: prev.fpsOverride,
+        targetDurationSeconds: prev.targetDurationSeconds ?? undefined,
+        speedToFit: prev.speedToFit ?? DEFAULT_TARGET_OPTIONS.speedToFit,
+        cropToFit: prev.cropToFit ?? DEFAULT_TARGET_OPTIONS.cropToFit,
+        quality: prev.quality ?? DEFAULT_TARGET_OPTIONS.quality,
+        maxFileSizeMb: prev.maxFileSizeMb ?? DEFAULT_TARGET_OPTIONS.maxFileSizeMb,
+        outputPath: newPath,
+      };
+    }));
+  };
+
   const removeTarget = (i: number) => {
     if (targets.length <= 1) return;
     setTargets(targets.filter((_, idx) => idx !== i));
   };
-  const updateTarget = (i: number, upd: Partial<{ platformId: string; outputPath: string }>) => {
-    setTargets(targets.map((t, idx) => (idx === i ? { ...t, ...upd } : t)));
+  const updateTarget = (i: number, upd: Partial<ExportTarget>) => {
+    setTargets(targets.map((t, idx) => {
+      if (idx !== i) return t;
+      const next = { ...t, ...upd };
+      if (upd.platformId === CUSTOM_PRESET_ID && !next.customPreset) next.customPreset = { ...DEFAULT_CUSTOM_PRESET };
+      if (upd.platformId != null && upd.platformId !== CUSTOM_PRESET_ID) next.customPreset = undefined;
+      if (upd.platformId != null) next.fpsOverride = undefined;
+      return next;
+    }));
   };
 
   useEffect(() => {
@@ -165,12 +229,6 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
     if (!selectedSessionFolder) return;
     window.timelapser.getFirstFrameDataUrl(selectedSessionFolder).then(({ dataUrl }) => setFirstFrameDataUrl(dataUrl));
   }, [selectedSessionFolder]);
-
-  const effectiveFps = speedToFit && preset.maxDurationSeconds > 0 && frameCount > 0
-    ? Math.max(1, frameCount / preset.maxDurationSeconds)
-    : (preset.fps || customFps);
-
-  const estimatedDuration = frameCount > 0 ? (frameCount / effectiveFps).toFixed(1) : '—';
 
   const pickMusic = async () => {
     const { path: p } = await window.timelapser.showAudioPicker();
@@ -203,16 +261,19 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
       setExportProgress({ current: done + 1, total: toExport.length });
       const basePath = t.outputPath.replace(/\.(mp4|webm|mov)$/i, '');
       const finalPath = t.outputPath.toLowerCase().endsWith(`.${ext}`) ? t.outputPath : `${basePath}.${ext}`;
-      const p = SOCIAL_PRESETS.find((x) => x.id === t.platformId) ?? SOCIAL_PRESETS[0];
-      const effFps = speedToFit && p.maxDurationSeconds > 0 && frameCount > 0
-        ? Math.max(1, frameCount / p.maxDurationSeconds) : (p.fps || customFps);
+      const p = getPresetForTarget(t);
+      const effFps = getEffectiveFpsForTarget(t, frameCount);
+      const speedToFit = t.speedToFit ?? DEFAULT_TARGET_OPTIONS.speedToFit;
+      const cropToFit = t.cropToFit ?? DEFAULT_TARGET_OPTIONS.cropToFit;
+      const quality = t.quality ?? DEFAULT_TARGET_OPTIONS.quality;
+      const maxFileSizeMb = t.maxFileSizeMb ?? DEFAULT_TARGET_OPTIONS.maxFileSizeMb;
       const result = await window.timelapser.exportVideo({
         sessionFolder: selectedSessionFolder,
         outputPath: finalPath,
         platform: t.platformId,
         format,
         maxDurationSeconds: speedToFit ? p.maxDurationSeconds : 0,
-        fps: p.fps || customFps,
+        fps: effFps,
         width: p.width,
         height: p.height,
         cropToFit,
@@ -254,7 +315,7 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
         </div>
         <div className="export-dialog__body">
           <p className="export-dialog__hint">
-            Choose a platform to get the right length and resolution. TimeLapser will speed up the timelapse to fit the max duration if needed.
+            Add export targets below. Each card has its own resolution, FPS, and quality. Use Copy from previous to duplicate settings.
           </p>
 
           {sessions.length > 0 && (
@@ -278,28 +339,6 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
             </label>
           )}
 
-          <label className="export-dialog__row">
-            <span>Platform (preview)</span>
-            <select
-              value={targets[0]?.platformId ?? platformId}
-              onChange={(e) => {
-                const v = e.target.value;
-                setPlatformId(v);
-                updateTarget(0, { platformId: v });
-              }}
-            >
-              {SOCIAL_PRESETS.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name} — {p.aspectRatio}
-                  {p.maxDurationSeconds > 0 ? `, max ${p.maxDurationSeconds}s` : ''} · {p.fps} FPS
-                </option>
-              ))}
-            </select>
-            <span className="export-dialog__encoding">
-              Export: {Math.round(effectiveFps)} FPS · {ENCODING_BY_FORMAT[format] || 'H.264'} ({format.toUpperCase()})
-            </span>
-          </label>
-
           <div className="export-dialog__row">
             <span>Video format</span>
             <select
@@ -314,100 +353,34 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
 
           <div className="export-dialog__row">
             <span>Aspect ratio preview</span>
+            <select
+              value={previewAspectRatio}
+              onChange={(e) => setPreviewAspectRatio(e.target.value as '16:9' | '9:16')}
+              style={{ marginBottom: 8 }}
+            >
+              <option value="16:9">16:9</option>
+              <option value="9:16">9:16</option>
+            </select>
             <div
               className={`export-dialog__preview ${firstFrameDataUrl ? 'export-dialog__preview--with-image' : ''}`}
               style={
                 firstFrameDataUrl
                   ? { width: previewSize.width, height: previewSize.height, minWidth: previewSize.width, minHeight: previewSize.height }
-                  : { aspectRatio: preset.aspectRatio.replace(':', '/'), maxWidth: '100%', maxHeight: 120 }
+                  : { aspectRatio: previewAspectRatio.replace(':', '/'), maxWidth: '100%', maxHeight: 120 }
               }
-              title={`Crop: ${preset.width}×${preset.height} (${preset.aspectRatio})`}
+              title={`Preview: ${previewWidth}×${previewHeight} (${previewAspectRatio})`}
             >
               {firstFrameDataUrl ? (
                 <img
                   src={firstFrameDataUrl}
                   alt="First frame"
-                  className={`export-dialog__preview-img ${cropToFit ? 'export-dialog__preview-img--cover' : ''}`}
+                  className="export-dialog__preview-img export-dialog__preview-img--cover"
                 />
               ) : null}
-              <span className="export-dialog__preview-label">{preset.aspectRatio}</span>
-              <span className="export-dialog__preview-size">{preset.width}×{preset.height}</span>
+              <span className="export-dialog__preview-label">{previewAspectRatio}</span>
+              <span className="export-dialog__preview-size">{previewWidth}×{previewHeight}</span>
             </div>
           </div>
-
-          <label className="export-dialog__row export-dialog__row--check">
-            <input
-              type="checkbox"
-              checked={cropToFit}
-              onChange={(e) => setCropToFit(e.target.checked)}
-            />
-            <span>Crop to fit resolution (no squish) — same crop for every frame</span>
-          </label>
-
-          <label className="export-dialog__row export-dialog__row--check">
-            <input
-              type="checkbox"
-              checked={speedToFit}
-              onChange={(e) => setSpeedToFit(e.target.checked)}
-            />
-            <span>Speed up to fit platform max duration</span>
-          </label>
-
-          <div className="export-dialog__row">
-            <span>Max file size</span>
-            <select
-              value={maxFileSizeMb != null ? String(maxFileSizeMb) : 'none'}
-              onChange={(e) => {
-                const v = e.target.value;
-                setMaxFileSizeMb(v === 'none' ? null : parseFloat(v));
-              }}
-            >
-              <option value="none">No limit</option>
-              <option value="5">5 MB</option>
-              <option value="9.9">9.9 MB (Discord)</option>
-              <option value="25">25 MB</option>
-              <option value="50">50 MB</option>
-              <option value="100">100 MB</option>
-            </select>
-            <span className="export-dialog__hint-inline">When set, bitrate is reduced or frames skipped to fit.</span>
-          </div>
-
-          <div className="export-dialog__row">
-            <span>Compression / quality</span>
-            <div className="export-dialog__slider-row">
-              <span className="export-dialog__slider-label">Smaller file</span>
-              <input
-                type="range"
-                min={0}
-                max={100}
-                value={quality}
-                onChange={(e) => setQuality(parseInt(e.target.value, 10))}
-                className="export-dialog__slider"
-              />
-              <span className="export-dialog__slider-label">Larger file</span>
-            </div>
-            <span className="export-dialog__hint-inline">
-              {maxFileSizeMb != null
-                ? 'Quality affects VP9 CRF when capping size; H.264 uses target bitrate.'
-                : 'Higher = better quality (lower CRF). Lower = more compression.'}
-            </span>
-          </div>
-
-          <div className="export-dialog__row">
-            <span>Output FPS (playback)</span>
-            <input
-              type="number"
-              min={1}
-              max={60}
-              value={Math.round(effectiveFps)}
-              onChange={(e) => setCustomFps(parseInt(e.target.value, 10) || 30)}
-              disabled={speedToFit && preset.maxDurationSeconds > 0}
-            />
-          </div>
-
-          <p className="export-dialog__meta">
-            Frames: {frameCount} → ~{estimatedDuration}s video · {preset.width}×{preset.height}
-          </p>
 
           <div className="export-dialog__row">
             <span>Music</span>
@@ -459,19 +432,154 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
           <div className="export-dialog__row">
             <span>Export to</span>
             {targets.map((t, i) => {
-              const p = SOCIAL_PRESETS.find((x) => x.id === t.platformId) ?? SOCIAL_PRESETS[0];
+              const p = getPresetForTarget(t);
+              const durationSec = getDurationSecForTarget(t, frameCount);
+              const estimatedMb = getEstimatedFileSizeMbForTarget(t, frameCount, format);
+              const displayFps = t.fpsOverride ?? p.fps;
               return (
-                <div key={i} className="export-dialog__target">
-                  <select
-                    value={t.platformId}
-                    onChange={(e) => updateTarget(i, { platformId: e.target.value })}
-                  >
-                    {SOCIAL_PRESETS.map((pres) => (
-                      <option key={pres.id} value={pres.id}>
-                        {pres.name} — {pres.aspectRatio}
-                      </option>
-                    ))}
-                  </select>
+                <div key={i} className="export-dialog__target-card">
+                  <div className="export-dialog__target-card-header">
+                    <select
+                      value={t.platformId}
+                      onChange={(e) => updateTarget(i, { platformId: e.target.value })}
+                    >
+                      {SOCIAL_PRESETS.map((pres) => (
+                        <option key={pres.id} value={pres.id}>
+                          {pres.name} — {pres.aspectRatio}, {pres.fps} FPS
+                          {pres.maxDurationSeconds > 0 ? `, max ${pres.maxDurationSeconds}s` : ''}
+                        </option>
+                      ))}
+                      <option value={CUSTOM_PRESET_ID}>Custom…</option>
+                    </select>
+                    {i > 0 && (
+                      <button type="button" className="export-dialog__btn export-dialog__btn--ghost" onClick={() => copyFromPrevious(i)} title="Copy from previous">
+                        Copy from previous
+                      </button>
+                    )}
+                    {targets.length > 1 && (
+                      <button type="button" className="export-dialog__btn export-dialog__btn--ghost" onClick={() => removeTarget(i)} title="Remove">
+                        Remove
+                      </button>
+                    )}
+                  </div>
+                  {t.platformId === CUSTOM_PRESET_ID && t.customPreset && (
+                    <div className="export-dialog__custom-preset">
+                      <label className="export-dialog__row export-dialog__row--small">
+                        <span>Width</span>
+                        <input
+                          type="number"
+                          min={1}
+                          max={4096}
+                          value={t.customPreset.width}
+                          onChange={(e) => updateTarget(i, { customPreset: { ...t.customPreset!, width: parseInt(e.target.value, 10) || 1920 } })}
+                        />
+                      </label>
+                      <label className="export-dialog__row export-dialog__row--small">
+                        <span>Height</span>
+                        <input
+                          type="number"
+                          min={1}
+                          max={4096}
+                          value={t.customPreset.height}
+                          onChange={(e) => updateTarget(i, { customPreset: { ...t.customPreset!, height: parseInt(e.target.value, 10) || 1080 } })}
+                        />
+                      </label>
+                      <label className="export-dialog__row export-dialog__row--small">
+                        <span>FPS</span>
+                        <input
+                          type="number"
+                          min={1}
+                          max={60}
+                          value={t.customPreset.fps}
+                          onChange={(e) => updateTarget(i, { customPreset: { ...t.customPreset!, fps: parseInt(e.target.value, 10) || 30 } })}
+                        />
+                      </label>
+                      <label className="export-dialog__row export-dialog__row--small">
+                        <span>Max duration (s)</span>
+                        <input
+                          type="number"
+                          min={0}
+                          value={t.customPreset.maxDurationSeconds}
+                          onChange={(e) => updateTarget(i, { customPreset: { ...t.customPreset!, maxDurationSeconds: Math.max(0, parseInt(e.target.value, 10) || 0) } })}
+                        />
+                      </label>
+                    </div>
+                  )}
+                  {(t.platformId !== CUSTOM_PRESET_ID) && (
+                    <label className="export-dialog__row">
+                      <span>Output FPS</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={60}
+                        value={displayFps}
+                        onChange={(e) => updateTarget(i, { fpsOverride: parseInt(e.target.value, 10) || undefined })}
+                      />
+                    </label>
+                  )}
+                  <label className="export-dialog__row">
+                    <span>Target video length (s)</span>
+                    <input
+                      type="number"
+                      min={0}
+                      step={0.5}
+                      placeholder="Auto (use FPS or speed to fit)"
+                      value={t.targetDurationSeconds != null && t.targetDurationSeconds > 0 ? t.targetDurationSeconds : ''}
+                      onChange={(e) => {
+                        const v = e.target.value.trim();
+                        updateTarget(i, { targetDurationSeconds: v === '' ? undefined : Math.max(0, parseFloat(v) || 0) });
+                      }}
+                    />
+                    <span className="export-dialog__hint-inline">0 or empty = use FPS or speed to fit.</span>
+                  </label>
+                  <label className="export-dialog__row export-dialog__row--check">
+                    <input
+                      type="checkbox"
+                      checked={t.speedToFit ?? DEFAULT_TARGET_OPTIONS.speedToFit}
+                      onChange={(e) => updateTarget(i, { speedToFit: e.target.checked })}
+                    />
+                    <span>Speed up to fit platform max duration</span>
+                  </label>
+                  <label className="export-dialog__row export-dialog__row--check">
+                    <input
+                      type="checkbox"
+                      checked={t.cropToFit ?? DEFAULT_TARGET_OPTIONS.cropToFit}
+                      onChange={(e) => updateTarget(i, { cropToFit: e.target.checked })}
+                    />
+                    <span>Crop to fit resolution (no squish)</span>
+                  </label>
+                  <div className="export-dialog__row">
+                    <span>Quality</span>
+                    <div className="export-dialog__slider-row">
+                      <span className="export-dialog__slider-label">Smaller</span>
+                      <input
+                        type="range"
+                        min={0}
+                        max={100}
+                        value={t.quality ?? DEFAULT_TARGET_OPTIONS.quality}
+                        onChange={(e) => updateTarget(i, { quality: parseInt(e.target.value, 10) })}
+                        className="export-dialog__slider"
+                      />
+                      <span className="export-dialog__slider-label">Larger</span>
+                    </div>
+                  </div>
+                  <div className="export-dialog__row">
+                    <span>Max file size</span>
+                    <select
+                      value={(t.maxFileSizeMb ?? DEFAULT_TARGET_OPTIONS.maxFileSizeMb) != null ? String(t.maxFileSizeMb ?? DEFAULT_TARGET_OPTIONS.maxFileSizeMb) : 'none'}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        updateTarget(i, { maxFileSizeMb: v === 'none' ? null : parseFloat(v) });
+                      }}
+                    >
+                      <option value="none">No limit</option>
+                      <option value="5">5 MB</option>
+                      <option value="9.9">9.9 MB (Discord)</option>
+                      <option value="25">25 MB</option>
+                      <option value="50">50 MB</option>
+                      <option value="100">100 MB</option>
+                    </select>
+                  </div>
                   <div className="export-dialog__save-as">
                     <input
                       type="text"
@@ -492,11 +600,13 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
                       Browse…
                     </button>
                   </div>
-                  {targets.length > 1 && (
-                    <button type="button" className="export-dialog__btn export-dialog__btn--ghost" onClick={() => removeTarget(i)} title="Remove">
-                      Remove
-                    </button>
-                  )}
+                  <p className="export-dialog__target-summary">
+                    <span title="Preview: length and estimated size depend on FPS, target length, and speed to fit.">
+                      Length: ~{frameCount > 0 ? durationSec.toFixed(1) : '—'}s
+                      {estimatedMb != null && ` · Est. size: ~${estimatedMb < 1 ? estimatedMb.toFixed(1) : Math.round(estimatedMb)} MB`}
+                      {(t.maxFileSizeMb ?? DEFAULT_TARGET_OPTIONS.maxFileSizeMb) != null && (t.maxFileSizeMb ?? DEFAULT_TARGET_OPTIONS.maxFileSizeMb)! > 0 && ` (max ${(t.maxFileSizeMb ?? DEFAULT_TARGET_OPTIONS.maxFileSizeMb)} MB)`}
+                    </span>
+                  </p>
                 </div>
               );
             })}

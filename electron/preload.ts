@@ -22,7 +22,7 @@ contextBridge.exposeInMainWorld('timelapser', {
   exportVideo: (args: unknown) => ipcRenderer.invoke('export-video', args),
   reportRendererError: (message: string, stack?: string) => ipcRenderer.send('renderer-error', message, stack || ''),
   logFromRenderer: (message: string) => ipcRenderer.send('renderer-log', message),
-  setOverlayExpanded: (expanded: boolean) => ipcRenderer.send('set-overlay-expanded', expanded),
+  setOverlayExpanded: (expanded: boolean) => ipcRenderer.invoke('set-overlay-expanded', expanded) as Promise<{ panelOnRight: boolean }>,
   setOverlayHeight: (height: number) => ipcRenderer.send('set-overlay-height', height),
   closeOverlay: () => ipcRenderer.send('close-overlay'),
   getOverlayBoundsAndWorkArea: () => ipcRenderer.invoke('get-overlay-bounds-and-work-area'),

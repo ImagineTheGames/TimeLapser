@@ -6,6 +6,8 @@ import ExportDialog from './components/ExportDialog';
 
 export default function App() {
   const [expanded, setExpanded] = useState(false);
+  /** When expanded, true = settings panel is to the right of the bar (e.g. when overlay is near left edge). */
+  const [panelOnRight, setPanelOnRight] = useState(false);
   const [state, setState] = useState<{ state: string; sessionFolder: string | null; frameCount: number; lastSessionFolder: string | null }>({
     state: 'idle',
     sessionFolder: null,
@@ -41,8 +43,11 @@ export default function App() {
     if (showExport) {
       window.timelapser?.setOverlayHeight?.(720);
     } else if (expanded) {
-      window.timelapser?.setOverlayExpanded?.(true);
+      window.timelapser?.setOverlayExpanded?.(true).then((res) => {
+        if (res?.panelOnRight != null) setPanelOnRight(res.panelOnRight);
+      });
     } else {
+      setPanelOnRight(false);
       window.timelapser?.setOverlayExpanded?.(false);
     }
   }, [expanded, showExport]);
@@ -84,17 +89,21 @@ export default function App() {
   return (
     <div className="app">
       {expanded ? (
-        <div className="app__expanded">
-          <div className="app__panel-wrap">
-            <SettingsPanel
-              sessionFolder={state.sessionFolder}
-              frameCount={state.frameCount}
-              onClose={() => setExpanded(false)}
-              onOpenFocusAssist={() => window.timelapser.openFocusAssist()}
-              inline
-            />
-          </div>
-          <div className="app__gap" />
+        <div className={`app__expanded ${panelOnRight ? 'app__expanded--panel-right' : ''}`}>
+          {!panelOnRight && (
+            <>
+              <div className="app__panel-wrap">
+                <SettingsPanel
+                  sessionFolder={state.sessionFolder}
+                  frameCount={state.frameCount}
+                  onClose={() => setExpanded(false)}
+                  onOpenFocusAssist={() => window.timelapser.openFocusAssist()}
+                  inline
+                />
+              </div>
+              <div className="app__gap" />
+            </>
+          )}
           <div className="app__bar-wrap">
             <Overlay
               state={state.state}
@@ -111,6 +120,20 @@ export default function App() {
               onOpenSettings={() => setExpanded(!expanded)}
             />
           </div>
+          {panelOnRight && (
+            <>
+              <div className="app__gap" />
+              <div className="app__panel-wrap">
+                <SettingsPanel
+                  sessionFolder={state.sessionFolder}
+                  frameCount={state.frameCount}
+                  onClose={() => setExpanded(false)}
+                  onOpenFocusAssist={() => window.timelapser.openFocusAssist()}
+                  inline
+                />
+              </div>
+            </>
+          )}
         </div>
       ) : (
         <Overlay

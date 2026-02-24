@@ -216,16 +216,17 @@ export default function SettingsPanel({ sessionFolder, frameCount, onClose, onOp
         </label>
 
         {String(settings.format) === 'jpeg' && (
-          <label className="settings-panel__row">
-            <span>JPEG quality (1–100)</span>
+          <div className="settings-panel__row">
+            <span>JPEG quality — {Number(settings.jpegQuality) ?? 85}</span>
             <input
-              type="number"
+              type="range"
               min={1}
               max={100}
               value={Number(settings.jpegQuality) ?? 85}
               onChange={(e) => update('jpegQuality', Math.min(100, Math.max(1, parseInt(e.target.value, 10) || 85)))}
+              className="settings-panel__slider"
             />
-          </label>
+          </div>
         )}
 
         <label className="settings-panel__row settings-panel__row--check">
