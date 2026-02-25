@@ -4,13 +4,13 @@ Desktop timelapse recorder: capture your monitor, a window, or a region at set i
 
 ## Screenshots
 
-| Overlay (Record / Continue / Settings / Export) | Export for social media (session + presets) |
-|--------------------------------|-----------------------------------|
-| ![Overlay](screenshots/overlay.png) | ![Export](screenshots/export-dialog.png) |
+| Export presets (Instagram, YouTube, TikTok, GIF, LinkedIn…) | Export for social media (session + presets) |
+|-------------------------------------------------------------|---------------------------------------------|
+| ![Export presets](screenshots/export-presets.png) | ![Export](screenshots/export-dialog.png) |
 
-| Export presets (Instagram, YouTube, TikTok, GIF, LinkedIn…) |
-|-------------------------------------------------------------|
-| ![Export presets](screenshots/export-presets.png) |
+| Overlay (Record / Continue / Settings / Export) |
+|-------------------------------------------------|
+| ![Overlay](screenshots/overlay.png) |
 
 ## Features
 
