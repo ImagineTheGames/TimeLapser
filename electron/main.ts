@@ -258,14 +258,19 @@ function showOverlayWindow() {
 
 /** Returns a 32x32 tray icon with opaque background so it displays on Windows. */
 async function getTrayIcon(): Promise<Electron.NativeImage> {
-  const iconPath = path.join(app.getAppPath(), 'public', 'icon.png');
   const size = 32;
   const opaqueBg = { r: 30, g: 41, b: 59, alpha: 1 };
-  try {
-    if (fs.existsSync(iconPath)) {
-      const buf = await sharp(iconPath)
-        .resize(size, size)
-        .toBuffer();
+  const appPath = app.getAppPath();
+  const candidates = [
+    path.join(__dirname, '..', 'public', 'icon.png'),
+    path.join(appPath, 'public', 'icon.png'),
+    appPath.replace(/\.asar$/, '.asar.unpacked') + path.sep + path.join('public', 'icon.png'),
+  ];
+  for (const iconPath of candidates) {
+    try {
+      if (!fs.existsSync(iconPath)) continue;
+      const raw = fs.readFileSync(iconPath);
+      const buf = await sharp(raw).resize(size, size).toBuffer();
       const withBg = await sharp({
         create: { width: size, height: size, channels: 4, background: opaqueBg },
       })
@@ -273,9 +278,9 @@ async function getTrayIcon(): Promise<Electron.NativeImage> {
         .png()
         .toBuffer();
       return nativeImage.createFromBuffer(withBg);
+    } catch (e) {
+      log('Tray icon load failed for', iconPath, (e as Error).message);
     }
-  } catch (e) {
-    log('Tray icon load failed:', (e as Error).message);
   }
   const fallback = await sharp({
     create: { width: size, height: size, channels: 4, background: opaqueBg },
