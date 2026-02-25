@@ -1,6 +1,6 @@
 {
   "name": "timelapser",
-  "version": "1.0.7",
+  "version": "1.0.10",
   "description": "Timelapse software - record monitor, window, or region with session management and social export",
   "main": "dist-electron/main.js",
   "author": "",
@@ -52,6 +52,7 @@
     "files": [
       "dist/**",
       "dist-electron/**",
+      "public/**",
       "node_modules/@ffmpeg-installer/**"
     ],
     "asarUnpack": [
@@ -61,6 +62,10 @@
       "target": [
         "nsis"
       ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
     }
   }
 }

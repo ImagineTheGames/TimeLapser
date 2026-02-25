@@ -64,6 +64,7 @@ let overlayWindow: BrowserWindow | null = null;
 let regionPickerWindow: BrowserWindow | null = null;
 let regionPickerOverlaySender: Electron.WebContents | null = null;
 let tray: Tray | null = null;
+let isQuitting = false;
 let captureTimer: ReturnType<typeof setInterval> | null = null;
 let captureState: CaptureState = 'idle';
 let currentSessionFolder: string | null = null;
@@ -104,18 +105,32 @@ function setOpenAtLogin(value: boolean) {
   }
 }
 
+/** Overlay width/height for positioning (must match BrowserWindow size). */
+const OVERLAY_W = 420;
+const OVERLAY_H_COLLAPSED = 120;
+
+/** Get overlay position on the display that contains the cursor (or primary), clamped to work area. */
+function getOverlayPosition(): { x: number; y: number; workArea: Electron.Rectangle } {
+  const point = screen.getCursorScreenPoint();
+  const display = screen.getDisplayNearestPoint(point);
+  const workArea = display.workArea;
+  const x = Math.max(workArea.x, workArea.x + workArea.width - OVERLAY_W - 20);
+  const y = Math.max(workArea.y, workArea.y + workArea.height - OVERLAY_H_COLLAPSED - 20);
+  return { x, y, workArea };
+}
+
 function ensureOverlayWindow() {
   if (overlayWindow && !overlayWindow.isDestroyed()) return overlayWindow;
   log('Creating overlay window...');
   const preloadPath = path.join(__dirname, 'preload.js');
   log('Preload path:', preloadPath, 'exists:', fs.existsSync(preloadPath));
-  const { width, height } = screen.getPrimaryDisplay().workAreaSize;
+  const { x, y } = getOverlayPosition();
   overlayWindow = new BrowserWindow({
     width: 420,
     height: OVERLAY_HEIGHT_COLLAPSED,
-    x: Math.max(0, width - 440),
-    y: Math.max(0, height - 80),
-    show: true,
+    x,
+    y,
+    show: false,
     frame: false,
     transparent: true,
     alwaysOnTop: true,
@@ -142,23 +157,59 @@ function ensureOverlayWindow() {
       if (!overlayWindow?.isDestroyed()) overlayWindow.setAlwaysOnTop(true, 'screen-saver');
     });
   });
-  if (process.env.NODE_ENV !== 'production') {
+  const isDev = !app.isPackaged && process.env.NODE_ENV !== 'production';
+  if (isDev) {
     const devUrl = process.env.VITE_DEV_SERVER_URL || 'http://localhost:5173';
     log('Loading dev URL:', devUrl);
     overlayWindow.loadURL(devUrl);
   } else {
-    const indexPath = path.join(__dirname, '../dist/index.html');
+    const pathFromDir = path.join(__dirname, '../dist/index.html');
+    const pathFromApp = path.join(app.getAppPath(), 'dist', 'index.html');
+    const indexPath = fs.existsSync(pathFromDir) ? pathFromDir : pathFromApp;
     log('Loading file:', indexPath, 'exists:', fs.existsSync(indexPath));
     overlayWindow.loadFile(indexPath);
   }
+  let productionLoadTriedAlt = false;
+  let overlayLoadFailed = false;
   overlayWindow.webContents.on('did-fail-load', (_e, code, errMsg, url) => {
     log('Overlay failed to load:', code, errMsg, url);
+    overlayLoadFailed = true;
+    if (app.isPackaged && overlayWindow && !overlayWindow.isDestroyed() && !productionLoadTriedAlt) {
+      productionLoadTriedAlt = true;
+      const pathFromDir = path.join(__dirname, '../dist/index.html');
+      const pathFromApp = path.join(app.getAppPath(), 'dist', 'index.html');
+      const altPath = fs.existsSync(pathFromDir) ? pathFromApp : pathFromDir;
+      log('Retrying load from:', altPath);
+      overlayWindow.loadFile(altPath).catch((err) => log('Retry load failed:', (err as Error).message));
+    }
   });
   overlayWindow.webContents.on('did-finish-load', () => {
+    if (overlayLoadFailed && !productionLoadTriedAlt) return;
+    overlayLoadFailed = false;
     log('Overlay finished loading');
+    if (overlayWindow && !overlayWindow.isDestroyed()) {
+      overlayWindow.show();
+      overlayWindow.focus();
+      overlayWindow.setAlwaysOnTop(true, 'screen-saver');
+      if (process.platform === 'win32') {
+        setTimeout(() => bringOverlayToFront(), 1500);
+        setTimeout(() => bringOverlayToFront(), 3500);
+      }
+    }
   });
-  // Keep app in tray: close button and Alt+F4 hide the overlay instead of destroying it
+  overlayWindow.once('ready-to-show', () => {
+    if (overlayWindow && !overlayWindow.isDestroyed() && !overlayWindow.isVisible()) {
+      overlayWindow.show();
+      overlayWindow.focus();
+      overlayWindow.setAlwaysOnTop(true, 'screen-saver');
+    }
+  });
+  // Keep app in tray: close button and Alt+F4 hide the overlay instead of destroying it (unless quitting)
   overlayWindow.on('close', (e) => {
+    if (isQuitting) {
+      // Let the window close so app.quit() can complete
+      return;
+    }
     if (!overlayWindow?.isDestroyed()) {
       e.preventDefault();
       overlayWindow.hide();
@@ -170,17 +221,38 @@ function ensureOverlayWindow() {
   return overlayWindow;
 }
 
+function bringOverlayToFront() {
+  if (!overlayWindow || overlayWindow.isDestroyed()) return;
+  overlayWindow.show();
+  overlayWindow.setAlwaysOnTop(true);
+  overlayWindow.focus();
+  overlayWindow.setAlwaysOnTop(true, 'screen-saver');
+  overlayWindow.moveTop();
+  overlayWindow.setVisibleOnAllWorkspaces(true);
+}
+
 function showOverlayWindow() {
   ensureOverlayWindow();
   if (!overlayWindow || overlayWindow.isDestroyed()) return;
   if (overlayWindow.isMinimized()) overlayWindow.restore();
-  const { width, height } = screen.getPrimaryDisplay().workAreaSize;
-  overlayWindow.setPosition(Math.max(0, width - 440), Math.max(0, height - 80));
+  const { x, y } = getOverlayPosition();
+  overlayWindow.setPosition(x, y);
+  overlayWindow.setVisibleOnAllWorkspaces(true);
   overlayWindow.show();
   overlayWindow.setAlwaysOnTop(true, 'screen-saver');
   overlayWindow.moveTop();
   overlayWindow.focus();
-  overlayWindow.setVisibleOnAllWorkspaces(true);
+  if (process.platform === 'win32') {
+    overlayWindow.setAlwaysOnTop(true);
+    setImmediate(() => {
+      if (overlayWindow && !overlayWindow.isDestroyed()) {
+        overlayWindow.setAlwaysOnTop(false);
+        overlayWindow.focus();
+        overlayWindow.setAlwaysOnTop(true, 'screen-saver');
+      }
+    });
+    setTimeout(() => bringOverlayToFront(), 150);
+  }
   log('Show overlay: shown, focused, moveTop');
 }
 
@@ -223,6 +295,7 @@ async function createWindow() {
     tray = new Tray(await getTrayIcon());
     tray.setToolTip('TimeLapser');
     tray.on('click', () => showOverlayWindow());
+    tray.on('double-click', () => showOverlayWindow());
     log('createWindow: building context menu...');
     const refreshTrayMenu = () => {
       if (!tray || tray.isDestroyed()) return;
@@ -241,7 +314,7 @@ async function createWindow() {
           },
         },
         { type: 'separator' },
-        { label: 'Quit', click: () => app.quit() },
+        { label: 'Quit', click: () => { isQuitting = true; app.quit(); } },
       ]);
       tray.setContextMenu(contextMenu);
     };
@@ -1171,8 +1244,21 @@ app.whenReady().then(async () => {
   }
 });
 
+app.on('before-quit', () => {
+  isQuitting = true;
+});
+
 app.on('window-all-closed', () => {
   log('window-all-closed');
+  if (isQuitting) {
+    // User chose Quit from tray; destroy tray and exit.
+    if (captureTimer) clearTimeout(captureTimer);
+    captureTimer = null;
+    if (tray && !tray.isDestroyed()) tray.destroy();
+    tray = null;
+    app.quit();
+    return;
+  }
   // Keep app running in tray; don't quit. User can show overlay again from tray.
   if (tray && !tray.isDestroyed()) {
     return;
