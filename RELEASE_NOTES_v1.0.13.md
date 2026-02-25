@@ -1,0 +1,13 @@
+# TimeLapser v1.0.13
+
+## Tray icon and packaging
+
+### Changed
+
+- **Tray icon** – New design: rounded blue square with a red recording circle inside, so the icon is clearer in the system tray and reads as "record" at small size.
+- **Tray icon loading** – Icon is now loaded from a buffer (read via Node `fs`) so it works reliably in the packaged app; multiple path candidates are tried (including `app.asar.unpacked/public`) so the icon appears after install.
+- **Public assets unpacked** – The `public` folder is unpacked from the ASAR archive so the tray icon file is available on disk in the installed app.
+
+### Install
+
+Download the latest Windows installer from the [Releases](https://github.com/ImagineTheGames/TimeLapser/releases) page.
