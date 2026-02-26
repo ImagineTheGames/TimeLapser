@@ -1255,7 +1255,7 @@ ipcMain.handle('export-video', async (_e, args: {
           .inputOptions(['-f', 'concat', '-safe', '0'])
           .input(watermarkPath!)
           .complexFilter(filterComplex, 'out')
-          .outputOptions(['-r', String(outFps), '-loop', '0', '-map', '[out]'])
+          .outputOptions(['-r', String(outFps), '-loop', '0'])
           .output(destPath)
           .on('end', () => { cleanup(); resolve({ ok: true, path: destPath }); })
           .on('error', (e: Error) => { cleanup(); resolve({ ok: false, message: e.message }); })
@@ -1331,7 +1331,7 @@ ipcMain.handle('export-video', async (_e, args: {
           .inputOptions([`-start_number ${startNumber}`, `-framerate ${fps}`])
           .input(watermarkPath!)
           .complexFilter(filterComplex, 'out')
-          .outputOptions([...videoOpts, '-map', '[out]'])
+          .outputOptions(videoOpts)
           .output(dest)
           .on('end', () => onDone(null))
           .on('error', onDone);
