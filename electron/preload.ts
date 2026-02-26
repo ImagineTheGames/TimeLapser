@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('timelapser', {
   resumeRecording: () => ipcRenderer.invoke('resume-recording'),
   stopRecording: () => ipcRenderer.invoke('stop-recording'),
   openFolder: (folder: string) => ipcRenderer.invoke('open-folder', folder),
+  openLogFolder: () => ipcRenderer.invoke('open-log-folder'),
   openFocusAssist: () => ipcRenderer.invoke('open-focus-assist'),
   getSessionFrameCount: (folder: string) => ipcRenderer.invoke('get-session-frame-count', folder),
   getSessionSize: (folder: string) => ipcRenderer.invoke('get-session-size', folder),

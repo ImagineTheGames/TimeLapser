@@ -250,9 +250,6 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
   const [message, setMessage] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [frameCount, setFrameCount] = useState(0);
   const [firstFrameDataUrl, setFirstFrameDataUrl] = useState<string | null>(null);
-  /** Aspect ratio for preview only: 16:9 or 9:16. */
-  const [previewAspectRatio, setPreviewAspectRatio] = useState<'16:9' | '9:16'>('9:16');
-
   const [targets, setTargets] = useState<ExportTarget[]>([
     {
       platformId: SOCIAL_PRESETS[0].id,
@@ -288,14 +285,6 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
       });
     });
   }, [selectedSessionFolder]);
-
-  /** Preview dimensions from aspect ratio only (16:9 or 9:16). */
-  const previewWidth = previewAspectRatio === '16:9' ? 1920 : 1080;
-  const previewHeight = previewAspectRatio === '16:9' ? 1080 : 1920;
-  const previewSize =
-    previewWidth >= previewHeight
-      ? { width: 220, height: Math.round((previewHeight * 220) / previewWidth) }
-      : { width: Math.round((previewWidth * 220) / previewHeight), height: 220 };
 
   /** Returns path with (1), (2), ... before extension so it doesn't overwrite existing. */
   const getNextUniquePath = (basePath: string, existingPaths: string[], ext: string): string => {
@@ -530,37 +519,6 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
           )}
 
           <div className="export-dialog__row">
-            <span>Aspect ratio preview</span>
-            <select
-              value={previewAspectRatio}
-              onChange={(e) => setPreviewAspectRatio(e.target.value as '16:9' | '9:16')}
-              style={{ marginBottom: 8 }}
-            >
-              <option value="16:9">16:9</option>
-              <option value="9:16">9:16</option>
-            </select>
-            <div
-              className={`export-dialog__preview ${firstFrameDataUrl ? 'export-dialog__preview--with-image' : ''}`}
-              style={
-                firstFrameDataUrl
-                  ? { width: previewSize.width, height: previewSize.height, minWidth: previewSize.width, minHeight: previewSize.height }
-                  : { aspectRatio: previewAspectRatio.replace(':', '/'), maxWidth: '100%', maxHeight: 120 }
-              }
-              title={`Preview: ${previewWidth}×${previewHeight} (${previewAspectRatio})`}
-            >
-              {firstFrameDataUrl ? (
-                <img
-                  src={firstFrameDataUrl}
-                  alt="First frame"
-                  className="export-dialog__preview-img export-dialog__preview-img--cover"
-                />
-              ) : null}
-              <span className="export-dialog__preview-label">{previewAspectRatio}</span>
-              <span className="export-dialog__preview-size">{previewWidth}×{previewHeight}</span>
-            </div>
-          </div>
-
-          <div className="export-dialog__row">
             <span>Music</span>
             <div className="export-dialog__music-row">
               <button type="button" className="export-dialog__btn export-dialog__btn--secondary" onClick={pickMusic}>
@@ -676,6 +634,22 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
                         Remove
                       </button>
                     )}
+                  </div>
+                  <div
+                    className={`export-dialog__preview export-dialog__target-preview ${firstFrameDataUrl ? 'export-dialog__preview--with-image' : ''}`}
+                    style={{ aspectRatio: p.aspectRatio.replace(':', '/'), maxWidth: '100%', maxHeight: 140, minHeight: 80 }}
+                    title={`Preview: ${t.cropToFit ?? DEFAULT_TARGET_OPTIONS.cropToFit ? 'Crop to fit' : 'Letterbox'} · ${p.aspectRatio}`}
+                  >
+                    {firstFrameDataUrl ? (
+                      <img
+                        src={firstFrameDataUrl}
+                        alt="Export preview"
+                        className="export-dialog__preview-img"
+                        style={{ objectFit: (t.cropToFit ?? DEFAULT_TARGET_OPTIONS.cropToFit) ? 'cover' : 'contain' }}
+                      />
+                    ) : null}
+                    <span className="export-dialog__preview-label">{p.aspectRatio}</span>
+                    <span className="export-dialog__preview-size">{p.width}×{p.height}</span>
                   </div>
                   {!isGifOrLinkedInGif && (
                     <label className="export-dialog__row">

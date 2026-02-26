@@ -10,6 +10,7 @@ interface TimeLapserAPI {
   resumeRecording: () => Promise<{ ok: boolean }>;
   stopRecording: () => Promise<{ ok: boolean; sessionFolder?: string | null; wasRecording?: boolean; frameCount?: number }>;
   openFolder: (folder: string) => Promise<void>;
+  openLogFolder: () => Promise<void>;
   openFocusAssist: () => Promise<void>;
   getSessionFrameCount: (folder: string) => Promise<number>;
   getSessionSize: (folder: string) => Promise<{ bytes: number }>;
@@ -47,6 +48,8 @@ interface CaptureSettings {
   disableNotifications: boolean;
   /** Overlay window opacity 0.1–1 (10%–100%) */
   overlayOpacity: number;
+  /** When true, full logging is written to main.log; when false, only startup/shutdown and errors. */
+  extendedLogging: boolean;
 }
 
 interface ExportVideoArgs {

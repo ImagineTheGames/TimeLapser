@@ -8,20 +8,64 @@ import sharp from 'sharp';
 
 const LOG_PREFIX = '[TimeLapser]';
 
+function getLogFilePath(): string | null {
+  try {
+    if (!app.isReady()) return null;
+    const logDir = path.join(app.getPath('userData'), 'logs');
+    if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+    return path.join(logDir, 'main.log');
+  } catch {
+    return null;
+  }
+}
+
+function getExtendedLogging(): boolean {
+  const s = store.get('captureSettings') as Partial<CaptureSettings> | undefined;
+  return !!s?.extendedLogging;
+}
+
+function writeToLogFile(line: string, args: unknown[]) {
+  const logFile = getLogFilePath();
+  if (!logFile) return;
+  try {
+    const ts = new Date().toISOString();
+    fs.appendFileSync(logFile, `${ts} ${line} ${args.length ? JSON.stringify(args) : ''}\n`);
+  } catch {
+    // ignore
+  }
+}
+
+/** Extended logging: only written to file when user enables "Extended logging" in settings. */
 function log(message: string, ...args: unknown[]) {
   const line = `${LOG_PREFIX} ${message}`;
-  console.log(line, ...args);
   try {
-    if (app.isReady()) {
-      const logDir = path.join(app.getPath('userData'), 'logs');
-      if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
-      const logFile = path.join(logDir, 'main.log');
-      const ts = new Date().toISOString();
-      fs.appendFileSync(logFile, `${ts} ${line} ${args.length ? JSON.stringify(args) : ''}\n`);
-    }
+    console.log(line, ...args);
   } catch {
-    // ignore file write errors
+    // stdout may be a broken pipe (EPIPE) if the terminal that launched the app closed
   }
+  if (getExtendedLogging()) writeToLogFile(line, args);
+}
+
+/** Minimal logging: always written to file (startup, shutdown). Use for first-time run diagnosis. */
+function logMinimal(message: string, ...args: unknown[]) {
+  const line = `${LOG_PREFIX} ${message}`;
+  try {
+    console.log(line, ...args);
+  } catch {
+    // ignore EPIPE
+  }
+  writeToLogFile(line, args);
+}
+
+/** Error logging: always written to file. */
+function logError(message: string, ...args: unknown[]) {
+  const line = `${LOG_PREFIX} ${message}`;
+  try {
+    console.log(line, ...args);
+  } catch {
+    // ignore EPIPE
+  }
+  writeToLogFile(line, args);
 }
 
 const store = new Store<Record<string, unknown>>();
@@ -43,6 +87,8 @@ interface CaptureSettings {
   disableNotifications: boolean;
   /** Overlay window opacity 0.1–1 (10%–100%) */
   overlayOpacity: number;
+  /** When true, full logging (recording, overlay, etc.) is written to main.log. Default false = minimal only (startup/shutdown). */
+  extendedLogging: boolean;
 }
 
 const defaultSettings: CaptureSettings = {
@@ -58,6 +104,7 @@ const defaultSettings: CaptureSettings = {
   optimizeFileSize: true,
   disableNotifications: false,
   overlayOpacity: 1,
+  extendedLogging: false,
 };
 
 let overlayWindow: BrowserWindow | null = null;
@@ -101,7 +148,7 @@ function setOpenAtLogin(value: boolean) {
   try {
     app.setLoginItemSettings({ openAtLogin: value });
   } catch (err) {
-    log('setLoginItemSettings failed:', (err as Error)?.message);
+    logError('setLoginItemSettings failed:', (err as Error)?.message);
   }
 }
 
@@ -121,10 +168,11 @@ function getOverlayPosition(): { x: number; y: number; workArea: Electron.Rectan
 
 function ensureOverlayWindow() {
   if (overlayWindow && !overlayWindow.isDestroyed()) return overlayWindow;
-  log('Creating overlay window...');
+  logMinimal('Creating overlay window...');
   const preloadPath = path.join(__dirname, 'preload.js');
   log('Preload path:', preloadPath, 'exists:', fs.existsSync(preloadPath));
   const { x, y } = getOverlayPosition();
+  const iconPath = getAppIconPath();
   overlayWindow = new BrowserWindow({
     width: 420,
     height: OVERLAY_HEIGHT_COLLAPSED,
@@ -136,6 +184,7 @@ function ensureOverlayWindow() {
     alwaysOnTop: true,
     skipTaskbar: true,
     resizable: false,
+    ...(iconPath ? { icon: nativeImage.createFromPath(iconPath) } : {}),
     webPreferences: {
       preload: preloadPath,
       contextIsolation: true,
@@ -160,19 +209,19 @@ function ensureOverlayWindow() {
   const isDev = !app.isPackaged && process.env.NODE_ENV !== 'production';
   if (isDev) {
     const devUrl = process.env.VITE_DEV_SERVER_URL || 'http://localhost:5173';
-    log('Loading dev URL:', devUrl);
+    logMinimal('Loading dev URL:', devUrl);
     overlayWindow.loadURL(devUrl);
   } else {
     const pathFromDir = path.join(__dirname, '../dist/index.html');
     const pathFromApp = path.join(app.getAppPath(), 'dist', 'index.html');
     const indexPath = fs.existsSync(pathFromDir) ? pathFromDir : pathFromApp;
-    log('Loading file:', indexPath, 'exists:', fs.existsSync(indexPath));
+    logMinimal('Loading file:', indexPath, 'exists:', fs.existsSync(indexPath));
     overlayWindow.loadFile(indexPath);
   }
   let productionLoadTriedAlt = false;
   let overlayLoadFailed = false;
   overlayWindow.webContents.on('did-fail-load', (_e, code, errMsg, url) => {
-    log('Overlay failed to load:', code, errMsg, url);
+    logError('Overlay failed to load:', code, errMsg, url);
     overlayLoadFailed = true;
     if (app.isPackaged && overlayWindow && !overlayWindow.isDestroyed() && !productionLoadTriedAlt) {
       productionLoadTriedAlt = true;
@@ -180,13 +229,13 @@ function ensureOverlayWindow() {
       const pathFromApp = path.join(app.getAppPath(), 'dist', 'index.html');
       const altPath = fs.existsSync(pathFromDir) ? pathFromApp : pathFromDir;
       log('Retrying load from:', altPath);
-      overlayWindow.loadFile(altPath).catch((err) => log('Retry load failed:', (err as Error).message));
+      overlayWindow.loadFile(altPath).catch((err) => logError('Retry load failed:', (err as Error).message));
     }
   });
   overlayWindow.webContents.on('did-finish-load', () => {
     if (overlayLoadFailed && !productionLoadTriedAlt) return;
     overlayLoadFailed = false;
-    log('Overlay finished loading');
+    logMinimal('Overlay finished loading');
     if (overlayWindow && !overlayWindow.isDestroyed()) {
       overlayWindow.show();
       overlayWindow.focus();
@@ -217,7 +266,7 @@ function ensureOverlayWindow() {
     }
   });
   overlayWindow.on('closed', () => { overlayWindow = null; });
-  log('Overlay window created');
+  logMinimal('Overlay window created');
   return overlayWindow;
 }
 
@@ -256,6 +305,20 @@ function showOverlayWindow() {
   log('Show overlay: shown, focused, moveTop');
 }
 
+/** Path to app icon (used for window icon; same locations as tray). Returns null if none found. */
+function getAppIconPath(): string | null {
+  const appPath = app.getAppPath();
+  const candidates = [
+    path.join(__dirname, '..', 'public', 'icon.png'),
+    path.join(appPath, 'public', 'icon.png'),
+    appPath.replace(/\.asar$/, '.asar.unpacked') + path.sep + path.join('public', 'icon.png'),
+  ];
+  for (const iconPath of candidates) {
+    if (fs.existsSync(iconPath)) return iconPath;
+  }
+  return null;
+}
+
 /** Returns a 32x32 tray icon with opaque background so it displays on Windows. */
 async function getTrayIcon(): Promise<Electron.NativeImage> {
   const size = 32;
@@ -279,7 +342,7 @@ async function getTrayIcon(): Promise<Electron.NativeImage> {
         .toBuffer();
       return nativeImage.createFromBuffer(withBg);
     } catch (e) {
-      log('Tray icon load failed for', iconPath, (e as Error).message);
+      logError('Tray icon load failed for', iconPath, (e as Error).message);
     }
   }
   const fallback = await sharp({
@@ -292,16 +355,16 @@ async function getTrayIcon(): Promise<Electron.NativeImage> {
 
 async function createWindow() {
   try {
-    log('createWindow: ensuring overlay...');
+    logMinimal('createWindow: ensuring overlay...');
     ensureOverlayWindow();
-    log('createWindow: creating tray...');
+    logMinimal('createWindow: creating tray...');
     const iconPath = path.join(app.getAppPath(), 'public', 'icon.png');
     log('Tray icon path:', iconPath, 'exists:', fs.existsSync(iconPath));
     tray = new Tray(await getTrayIcon());
     tray.setToolTip('TimeLapser');
     tray.on('click', () => showOverlayWindow());
     tray.on('double-click', () => showOverlayWindow());
-    log('createWindow: building context menu...');
+    logMinimal('createWindow: building context menu...');
     const refreshTrayMenu = () => {
       if (!tray || tray.isDestroyed()) return;
       const openAtLogin = getOpenAtLogin();
@@ -324,9 +387,9 @@ async function createWindow() {
       tray.setContextMenu(contextMenu);
     };
     refreshTrayMenu();
-    log('createWindow: done');
+    logMinimal('createWindow: done');
   } catch (err) {
-    log('createWindow failed:', err);
+    logError('createWindow failed:', err);
     throw err;
   }
 }
@@ -341,28 +404,85 @@ async function captureFrame(): Promise<Buffer> {
     if (id != null) opts.screen = id;
   } else if (settings.source === 'region' && settings.region) {
     const r = settings.region;
-    const idx = electronDisplays.findIndex(
-      (d) =>
-        r.x >= d.bounds.x &&
-        r.x < d.bounds.x + d.bounds.width &&
-        r.y >= d.bounds.y &&
-        r.y < d.bounds.y + d.bounds.height
-    );
-    const displayIndex = idx >= 0 ? idx : 0;
-    const disp = electronDisplays[displayIndex];
-    const screenId = listDisplays[displayIndex]?.id ?? listDisplays[0]?.id;
-    if (screenId != null) opts.screen = screenId;
-    opts.format = settings.format === 'jpeg' ? 'jpg' : 'png';
-    let buf = await screenshot(opts);
-    const left = Math.max(0, Math.min(disp.bounds.width - 1, r.x - disp.bounds.x));
-    const top = Math.max(0, Math.min(disp.bounds.height - 1, r.y - disp.bounds.y));
-    const width = Math.max(1, Math.min(disp.bounds.width - left, r.width));
-    const height = Math.max(1, Math.min(disp.bounds.height - top, r.height));
-    try {
-      buf = await sharp(buf).extract({ left, top, width, height }).toBuffer();
-    } catch (err) {
-      log('Region extract failed:', (err as Error)?.message, { left, top, width, height, bounds: disp.bounds });
-      throw err;
+    const rRight = r.x + r.width;
+    const rBottom = r.y + r.height;
+    const displaysIntersecting = electronDisplays.filter((d) => {
+      const dx = d.bounds.x;
+      const dy = d.bounds.y;
+      const dw = d.bounds.width;
+      const dh = d.bounds.height;
+      return r.x < dx + dw && rRight > dx && r.y < dy + dh && rBottom > dy;
+    });
+    let buf: Buffer;
+    if (displaysIntersecting.length <= 1) {
+      const disp = displaysIntersecting[0] ?? electronDisplays[0];
+      const displayIndex = electronDisplays.indexOf(disp);
+      const screenId = listDisplays[displayIndex]?.id ?? listDisplays[0]?.id;
+      if (screenId != null) opts.screen = screenId;
+      opts.format = settings.format === 'jpeg' ? 'jpg' : 'png';
+      buf = await screenshot(opts);
+      const left = Math.max(0, Math.min(disp.bounds.width - 1, r.x - disp.bounds.x));
+      const top = Math.max(0, Math.min(disp.bounds.height - 1, r.y - disp.bounds.y));
+      const width = Math.max(1, Math.min(disp.bounds.width - left, r.width));
+      const height = Math.max(1, Math.min(disp.bounds.height - top, r.height));
+      try {
+        buf = await sharp(buf).extract({ left, top, width, height }).toBuffer();
+      } catch (err) {
+        logError('Region extract failed:', (err as Error)?.message, { left, top, width, height, bounds: disp.bounds });
+        throw err;
+      }
+    } else {
+      const virtual = getVirtualScreenBounds();
+      let allBuffers: Buffer[];
+      try {
+        allBuffers = await (screenshot as { all: () => Promise<Buffer[]> }).all();
+      } catch (e) {
+        logError('screenshot.all failed, capturing single display:', (e as Error)?.message);
+        allBuffers = [];
+      }
+      if (allBuffers.length === 0) {
+        const disp = displaysIntersecting[0] ?? electronDisplays[0];
+        const displayIndex = electronDisplays.indexOf(disp);
+        const screenId = listDisplays[displayIndex]?.id ?? listDisplays[0]?.id;
+        opts.screen = screenId ?? undefined;
+        opts.format = settings.format === 'jpeg' ? 'jpg' : 'png';
+        buf = await screenshot(opts);
+        const left = Math.max(0, Math.min(disp.bounds.width - 1, r.x - disp.bounds.x));
+        const top = Math.max(0, Math.min(disp.bounds.height - 1, r.y - disp.bounds.y));
+        const width = Math.max(1, Math.min(disp.bounds.width - left, r.width));
+        const height = Math.max(1, Math.min(disp.bounds.height - top, r.height));
+        buf = await sharp(buf).extract({ left, top, width, height }).toBuffer();
+      } else {
+      const inputs: { input: Buffer; left: number; top: number }[] = [];
+      for (let i = 0; i < electronDisplays.length && i < allBuffers.length; i++) {
+        const b = electronDisplays[i].bounds;
+        inputs.push({
+          input: allBuffers[i],
+          left: b.x - virtual.x,
+          top: b.y - virtual.y,
+        });
+      }
+      const composite = await sharp({
+        create: { width: virtual.width, height: virtual.height, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 1 } },
+      })
+        .png()
+        .toBuffer();
+      const composites = inputs.map(({ input, left, top }) => ({ input, left, top }));
+      let composed = sharp(composite).composite(composites);
+      try {
+        const extractLeft = r.x - virtual.x;
+        const extractTop = r.y - virtual.y;
+        buf = await composed.extract({
+          left: Math.max(0, extractLeft),
+          top: Math.max(0, extractTop),
+          width: Math.min(virtual.width - Math.max(0, extractLeft), r.width),
+          height: Math.min(virtual.height - Math.max(0, extractTop), r.height),
+        }).toBuffer();
+      } catch (err) {
+        logError('Region extract (multi-monitor) failed:', (err as Error)?.message);
+        throw err;
+      }
+      }
     }
     let pipeline = sharp(buf);
     if (settings.width > 0 && settings.height > 0) {
@@ -433,18 +553,25 @@ function runCaptureLoop() {
   }
   captureFrame()
     .then(async (buf) => {
+      if (!buf || buf.length === 0) {
+        throw new Error('Capture returned empty buffer (0 bytes)');
+      }
       const ext = settings.format === 'jpeg' ? 'jpg' : 'png';
       const nextIndex = frameIndex + 1;
       const file = path.join(currentSessionFolder!, `frame_${String(nextIndex).padStart(6, '0')}.${ext}`);
       await fs.promises.writeFile(file, buf);
-      frameIndex = nextIndex;
+      const stat = await fs.promises.stat(file);
       if (nextIndex === 1) {
-        log('Capture loop: first frame saved', file);
+        log('Capture loop: first frame saved', file, 'size:', stat.size, 'bytes');
+        if (stat.size === 0) {
+          logError('Capture warning: first frame file is 0 bytes – export may fail');
+        }
       }
+      frameIndex = nextIndex;
     })
     .catch((err) => {
       const file = currentSessionFolder ? path.join(currentSessionFolder, `frame_${String(frameIndex + 1).padStart(6, '0')}.${settings.format === 'jpeg' ? 'jpg' : 'png'}`) : '(no session)';
-      log('Capture error:', (err as Error)?.message ?? err, 'path:', file);
+      logError('Capture error:', (err as Error)?.message ?? err, 'path:', file);
     })
     .finally(() => {
       if (captureState === 'recording') {
@@ -454,7 +581,7 @@ function runCaptureLoop() {
 }
 
 ipcMain.on('renderer-error', (_e, message: string, stack: string) => {
-  log('Renderer error:', message, stack || '(no stack)');
+  logError('Renderer error:', message, stack || '(no stack)');
 });
 
 ipcMain.on('renderer-log', (_e, message: string) => {
@@ -494,6 +621,7 @@ ipcMain.handle('start-region-pick', async (e) => {
   const bounds = getVirtualScreenBounds();
   const preloadPickerPath = path.join(__dirname, 'preload-region-picker.js');
   log('Region picker bounds:', bounds, 'preload exists:', fs.existsSync(preloadPickerPath));
+  const pickerIconPath = getAppIconPath();
   regionPickerWindow = new BrowserWindow({
     x: bounds.x,
     y: bounds.y,
@@ -507,6 +635,7 @@ ipcMain.handle('start-region-pick', async (e) => {
     resizable: false,
     hasShadow: false,
     enableLargerThanScreen: true,
+    ...(pickerIconPath ? { icon: nativeImage.createFromPath(pickerIconPath) } : {}),
     webPreferences: {
       preload: preloadPickerPath,
       contextIsolation: true,
@@ -625,7 +754,7 @@ function setOverlayBoundsAndSize(newHeight: number, expandedWithPanel?: boolean)
     overlayWindow.setBounds({ x, y, width, height: h }, false);
     log('Overlay bounds:', x, y, width, h, 'panelOnRight:', overlayPanelOnRight);
   } catch (err) {
-    log('setOverlayBoundsAndSize failed:', (err as Error).message);
+    logError('setOverlayBoundsAndSize failed:', (err as Error).message);
     overlayWindow.setSize(width, h);
   }
 }
@@ -659,7 +788,7 @@ ipcMain.handle('get-displays', async () => {
       bounds: displays[i]?.bounds ?? { x: 0, y: 0, width: 1920, height: 1080 },
     }));
   } catch (err) {
-    log('get-displays failed (using Electron screen fallback):', (err as Error).message);
+    logError('get-displays failed (using Electron screen fallback):', (err as Error).message);
     const displays = screen.getAllDisplays();
     return displays.map((d, i) => ({
       id: i,
@@ -701,7 +830,7 @@ ipcMain.handle('get-state', () => {
 
 ipcMain.handle('start-recording', async (_e, newSession: unknown) => {
   if (captureState === 'recording') {
-    log('start-recording: rejected (already recording)');
+    logError('start-recording: rejected (already recording)');
     return { ok: false, message: 'Already recording' };
   }
   settings = getSettings();
@@ -770,6 +899,12 @@ ipcMain.handle('stop-recording', () => {
 
 ipcMain.handle('open-folder', (_e, folder: string) => {
   if (folder && fs.existsSync(folder)) shell.openPath(folder);
+});
+
+ipcMain.handle('open-log-folder', () => {
+  const logDir = path.join(app.getPath('userData'), 'logs');
+  if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+  shell.openPath(logDir);
 });
 
 ipcMain.handle('get-session-frame-count', (_e, sessionFolder: string) => {
@@ -959,6 +1094,18 @@ ipcMain.handle('export-video', async (_e, args: {
       return na - nb;
     });
   if (frames.length === 0) return { ok: false, message: 'No frames in session' };
+  const firstFramePath = path.join(sessionFolder, frames[0]);
+  let firstFrameSize = 0;
+  try {
+    firstFrameSize = fs.statSync(firstFramePath).size;
+  } catch {
+    // ignore
+  }
+  log('export-video: sessionFolder:', sessionFolder, 'frames:', frames.length, 'firstFrame:', frames[0], 'size:', firstFrameSize);
+  if (firstFrameSize === 0) {
+    logError('export-video: first frame is 0 bytes, refusing to export');
+    return { ok: false, message: 'First frame file is empty (0 bytes). The recording did not capture correctly – try a different capture source or reinstall the app.' };
+  }
   let ffmpegPath: string | null = null;
   try {
     ffmpegPath = require('@ffmpeg-installer/ffmpeg').path;
@@ -980,12 +1127,12 @@ ipcMain.handle('export-video', async (_e, args: {
     }
   }
   if (!ffmpegPath) {
-    log('FFmpeg not found: bundled installer missing and not on PATH');
+    logError('FFmpeg not found: bundled installer missing and not on PATH');
     return { ok: false, message: 'FFmpeg not found. Install from https://ffmpeg.org or run: winget install FFmpeg' };
   }
   const ffmpeg = require('fluent-ffmpeg');
   ffmpeg.setFfmpegPath(ffmpegPath);
-  const firstFrame = path.join(sessionFolder, frames[0]);
+  const firstFrame = firstFramePath;
   const pattern = path.join(sessionFolder, 'frame_%06d' + path.extname(firstFrame)).replace(/\\/g, '/');
   const startNumber = 1; // frames are frame_000001, frame_000002, ...
   let outFps = fps;
@@ -1243,18 +1390,17 @@ ipcMain.handle('export-video', async (_e, args: {
 });
 
 process.on('uncaughtException', (err) => {
-  console.error(LOG_PREFIX, 'Uncaught exception:', err);
   try {
     if (app.isReady()) {
       const logDir = path.join(app.getPath('userData'), 'logs');
       const logFile = path.join(logDir, 'main.log');
-      fs.appendFileSync(logFile, `${new Date().toISOString()} ${LOG_PREFIX} Uncaught exception: ${err.stack}\n`);
+      fs.appendFileSync(logFile, `${new Date().toISOString()} ${LOG_PREFIX} Uncaught exception: ${err?.stack ?? err}\n`);
     }
   } catch { /* ignore */ }
+  // Do not use console here: stdout/stderr may be a broken pipe (EPIPE) if the terminal closed
 });
 
 process.on('unhandledRejection', (reason, p) => {
-  console.error(LOG_PREFIX, 'Unhandled rejection:', reason, p);
   try {
     if (app.isReady()) {
       const logDir = path.join(app.getPath('userData'), 'logs');
@@ -1262,27 +1408,32 @@ process.on('unhandledRejection', (reason, p) => {
       fs.appendFileSync(logFile, `${new Date().toISOString()} ${LOG_PREFIX} Unhandled rejection: ${String(reason)}\n`);
     }
   } catch { /* ignore */ }
+  // Do not use console here: stdout/stderr may be a broken pipe (EPIPE) if the terminal closed
 });
 
-log('Main process starting, app.isReady:', app.isReady());
+logMinimal('Main process starting, app.isReady:', app.isReady());
 
 app.whenReady().then(async () => {
-  log('App ready');
+  logMinimal('App ready');
   try {
-    log('Loading settings...');
+    logMinimal('Loading settings...');
     settings = getSettings();
-    log('Settings loaded, outputFolder:', settings.outputFolder);
+    logMinimal('Settings loaded, outputFolder:', settings.outputFolder);
     try {
       app.setLoginItemSettings({ openAtLogin: getOpenAtLogin() });
     } catch (err) {
-      log('setLoginItemSettings on startup:', (err as Error)?.message);
+      logError('setLoginItemSettings on startup:', (err as Error)?.message);
     }
     await createWindow();
-    log('Startup complete');
-    log('Log file:', path.join(app.getPath('userData'), 'logs', 'main.log'));
+    logMinimal('Startup complete');
+    logMinimal('Log file:', path.join(app.getPath('userData'), 'logs', 'main.log'));
   } catch (err) {
-    log('Startup failed:', err);
-    console.error(LOG_PREFIX, 'Startup error:', err);
+    logError('Startup failed:', err);
+    try {
+      console.error(LOG_PREFIX, 'Startup error:', err);
+    } catch {
+      // Ignore EPIPE if terminal/pipe is closed
+    }
     app.quit(1);
   }
 });
@@ -1292,7 +1443,7 @@ app.on('before-quit', () => {
 });
 
 app.on('window-all-closed', () => {
-  log('window-all-closed');
+  logMinimal('window-all-closed');
   if (isQuitting) {
     // User chose Quit from tray; destroy tray and exit.
     if (captureTimer) clearTimeout(captureTimer);

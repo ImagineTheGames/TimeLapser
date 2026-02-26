@@ -279,6 +279,25 @@ export default function SettingsPanel({ sessionFolder, frameCount, onClose, onOp
           <span>Fewer interruptions during recording</span>
         </label>
 
+        <label className="settings-panel__row settings-panel__row--check">
+          <input
+            type="checkbox"
+            checked={Boolean(settings.extendedLogging)}
+            onChange={(e) => update('extendedLogging', e.target.checked)}
+          />
+          <span>Extended logging</span>
+        </label>
+        <p className="settings-panel__hint" style={{ marginTop: -8, marginBottom: 4 }}>
+          When on, the log file records recording, overlay, and export details. When off, only startup, shutdown, and errors are logged (helps with first-time run issues).
+        </p>
+        <button
+          type="button"
+          className="settings-panel__link"
+          onClick={() => window.timelapser.openLogFolder()}
+        >
+          Open log folder
+        </button>
+
         <div className="settings-panel__row">
           <span>Overlay transparency — {Math.round((Number(settings.overlayOpacity) ?? 1) * 100)}%</span>
           <input

@@ -1,6 +1,6 @@
 {
   "name": "timelapser",
-  "version": "1.0.14",
+  "version": "1.0.15",
   "description": "Timelapse software - record monitor, window, or region with session management and social export",
   "main": "dist-electron/main.js",
   "author": "",
@@ -61,13 +61,16 @@
       "public/**"
     ],
     "win": {
+      "icon": "public/icon.png",
       "target": [
         "nsis"
       ]
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "public/icon.png",
+      "uninstallerIcon": "public/icon.png"
     }
   }
 }

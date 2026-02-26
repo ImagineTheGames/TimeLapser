@@ -263,6 +263,10 @@
   background: rgba(248, 113, 113, 0.1);
 }
 
+.export-dialog__target-preview {
+  margin-bottom: 8px;
+}
+
 .export-dialog__target-card {
   border: 1px solid rgba(148, 163, 184, 0.2);
   border-radius: 8px;
