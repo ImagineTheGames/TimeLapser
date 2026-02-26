@@ -32,6 +32,7 @@ interface TimeLapserAPI {
   getOverlayBoundsAndWorkArea: () => Promise<{ bounds: { x: number; y: number; width: number; height: number }; workArea: { x: number; y: number; width: number; height: number }; panelOnRight?: boolean }>;
   startRegionPick: () => Promise<void>;
   onRegionPicked: (callback: (region: { x: number; y: number; width: number; height: number } | null) => void) => () => void;
+  onCollapsePanels: (callback: () => void) => () => void;
 }
 
 interface CaptureSettings {

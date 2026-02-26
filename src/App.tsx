@@ -41,6 +41,14 @@ export default function App() {
   }, [state.sessionFolder, state.state]);
 
   useEffect(() => {
+    const unsub = window.timelapser.onCollapsePanels?.(() => {
+      setExpanded(false);
+      setShowExport(false);
+    });
+    return () => unsub?.();
+  }, []);
+
+  useEffect(() => {
     if (showExport) {
       window.timelapser?.setOverlayHeight?.(720);
     } else if (expanded) {

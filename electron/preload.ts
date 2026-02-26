@@ -36,4 +36,9 @@ contextBridge.exposeInMainWorld('timelapser', {
     ipcRenderer.on('region-picked', fn);
     return () => ipcRenderer.removeListener('region-picked', fn);
   },
+  onCollapsePanels: (callback: () => void) => {
+    const fn = () => callback();
+    ipcRenderer.on('collapse-overlay-panels', fn);
+    return () => ipcRenderer.removeListener('collapse-overlay-panels', fn);
+  },
 });

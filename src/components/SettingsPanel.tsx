@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import './SettingsPanel.css';
 
 interface Display {
@@ -35,6 +35,9 @@ export default function SettingsPanel({ sessionFolder, frameCount, onClose, onOp
   const [sessionList, setSessionList] = useState<{ path: string; name: string }[]>([]);
   const [continueSessionPath, setContinueSessionPathState] = useState<string | null>(null);
   const [panelPosition, setPanelPosition] = useState<{ top?: number; right?: number; bottom?: number; left?: number }>({ top: BAR_HEIGHT, right: 12 });
+  const [resolutionWidthStr, setResolutionWidthStr] = useState('');
+  const [resolutionHeightStr, setResolutionHeightStr] = useState('');
+  const resolutionJustSetByUs = useRef<'width' | 'height' | null>(null);
 
   useEffect(() => {
     const t = setTimeout(() => {
@@ -83,6 +86,21 @@ export default function SettingsPanel({ sessionFolder, frameCount, onClose, onOp
     const t = setInterval(load, 1500);
     return () => clearInterval(t);
   }, [sessionFolder]);
+
+  useEffect(() => {
+    const w = settings.width;
+    const h = settings.height;
+    if (resolutionJustSetByUs.current === 'width') {
+      resolutionJustSetByUs.current = null;
+    } else if (w !== undefined && w !== null) {
+      setResolutionWidthStr(String(w));
+    }
+    if (resolutionJustSetByUs.current === 'height') {
+      resolutionJustSetByUs.current = null;
+    } else if (h !== undefined && h !== null) {
+      setResolutionHeightStr(String(h));
+    }
+  }, [settings.width, settings.height]);
 
   const update = (key: string, value: unknown) => {
     const next = { ...settings, [key]: value };
@@ -221,16 +239,28 @@ export default function SettingsPanel({ sessionFolder, frameCount, onClose, onOp
               type="number"
               min={0}
               placeholder="1920"
-              value={Number(settings.width) || ''}
-              onChange={(e) => update('width', parseInt(e.target.value, 10) || 0)}
+              value={resolutionWidthStr}
+              onChange={(e) => {
+                const raw = e.target.value;
+                setResolutionWidthStr(raw);
+                const n = parseInt(raw, 10);
+                resolutionJustSetByUs.current = 'width';
+                update('width', Number.isNaN(n) ? 0 : n);
+              }}
             />
             <span>×</span>
             <input
               type="number"
               min={0}
               placeholder="1080"
-              value={Number(settings.height) || ''}
-              onChange={(e) => update('height', parseInt(e.target.value, 10) || 0)}
+              value={resolutionHeightStr}
+              onChange={(e) => {
+                const raw = e.target.value;
+                setResolutionHeightStr(raw);
+                const n = parseInt(raw, 10);
+                resolutionJustSetByUs.current = 'height';
+                update('height', Number.isNaN(n) ? 0 : n);
+              }}
             />
           </div>
         </label>

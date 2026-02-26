@@ -291,6 +291,10 @@ function showOverlayWindow() {
   overlayWindow.setAlwaysOnTop(true, 'screen-saver');
   overlayWindow.moveTop();
   overlayWindow.focus();
+  // Collapse settings/export so they are closed when reshowing from tray
+  if (!overlayWindow.webContents.isDestroyed()) {
+    overlayWindow.webContents.send('collapse-overlay-panels');
+  }
   if (process.platform === 'win32') {
     overlayWindow.setAlwaysOnTop(true);
     setImmediate(() => {
@@ -433,14 +437,61 @@ async function captureFrame(): Promise<Buffer> {
       }
     } else {
       const virtual = getVirtualScreenBounds();
-      let allBuffers: Buffer[];
-      try {
-        allBuffers = await (screenshot as { all: () => Promise<Buffer[]> }).all();
-      } catch (e) {
-        logError('screenshot.all failed, capturing single display:', (e as Error)?.message);
-        allBuffers = [];
+      const screenshotDisplays = listDisplays as { id: string; left: number; top: number; width: number; height: number }[];
+      // Capture each display individually (don't use screenshot.all() – it can fail if any display fails).
+      // Match each Electron display to a screenshot display by position, then capture by that id.
+      const inputs: { input: Buffer; left: number; top: number }[] = [];
+      for (const eDisplay of electronDisplays) {
+        const b = eDisplay.bounds;
+        let bestJ = -1;
+        let bestDist = Infinity;
+        for (let j = 0; j < screenshotDisplays.length; j++) {
+          const d = screenshotDisplays[j];
+          const dx = (d.left - b.x);
+          const dy = (d.top - b.y);
+          const dist = dx * dx + dy * dy;
+          if (dist < bestDist) {
+            bestDist = dist;
+            bestJ = j;
+          }
+        }
+        if (bestJ < 0) continue;
+        const screenId = screenshotDisplays[bestJ].id;
+        let displayBuf: Buffer;
+        try {
+          displayBuf = await screenshot({
+            screen: screenId,
+            format: settings.format === 'jpeg' ? 'jpg' : 'png',
+          } as { screen?: number; format?: string });
+        } catch (e) {
+          logError('Multi-monitor: capture failed for display at', b.x, b.y, (e as Error)?.message);
+          continue;
+        }
+        const rawLeft = Math.round(b.x - virtual.x);
+        const rawTop = Math.round(b.y - virtual.y);
+        const left = Math.max(0, Math.min(rawLeft, virtual.width - 1));
+        const top = Math.max(0, Math.min(rawTop, virtual.height - 1));
+        // Ensure overlay fits inside composite: placeW/H must satisfy left+placeW<=virtual.width, top+placeH<=virtual.height
+        const placeW = Math.max(1, Math.min(b.width, virtual.width - left));
+        const placeH = Math.max(1, Math.min(b.height, virtual.height - top));
+        let overlayBuf = await sharp(displayBuf)
+          .resize(placeW, placeH, { fit: 'fill' })
+          .ensureAlpha()
+          .png()
+          .toBuffer();
+        // Force exact dimensions (sharp composite requires overlay not to exceed base; resize can vary with source)
+        const meta = await sharp(overlayBuf).metadata();
+        const ow = meta.width ?? placeW;
+        const oh = meta.height ?? placeH;
+        if (ow > placeW || oh > placeH) {
+          overlayBuf = await sharp(overlayBuf)
+            .extract({ left: 0, top: 0, width: Math.min(placeW, ow), height: Math.min(placeH, oh) })
+            .png()
+            .toBuffer();
+        }
+        inputs.push({ input: overlayBuf, left, top });
       }
-      if (allBuffers.length === 0) {
+      if (inputs.length === 0) {
         const disp = displaysIntersecting[0] ?? electronDisplays[0];
         const displayIndex = electronDisplays.indexOf(disp);
         const screenId = listDisplays[displayIndex]?.id ?? listDisplays[0]?.id;
@@ -453,25 +504,27 @@ async function captureFrame(): Promise<Buffer> {
         const height = Math.max(1, Math.min(disp.bounds.height - top, r.height));
         buf = await sharp(buf).extract({ left, top, width, height }).toBuffer();
       } else {
-      const inputs: { input: Buffer; left: number; top: number }[] = [];
-      for (let i = 0; i < electronDisplays.length && i < allBuffers.length; i++) {
-        const b = electronDisplays[i].bounds;
-        const resized = await sharp(allBuffers[i])
-          .resize(b.width, b.height, { fit: 'fill' })
-          .toBuffer();
-        inputs.push({
-          input: resized,
-          left: b.x - virtual.x,
-          top: b.y - virtual.y,
-        });
-      }
-      const composite = await sharp({
+      // Composite one overlay at a time to avoid "same dimensions or smaller" with multiple inputs
+      let baseBuf = await sharp({
         create: { width: virtual.width, height: virtual.height, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 1 } },
       })
         .png()
         .toBuffer();
-      const composites = inputs.map(({ input, left, top }) => ({ input, left, top }));
-      let composed = sharp(composite).composite(composites);
+      for (const { input, left, top } of inputs) {
+        const meta = await sharp(input).metadata();
+        const iw = meta.width ?? 0;
+        const ih = meta.height ?? 0;
+        const maxW = virtual.width - left;
+        const maxH = virtual.height - top;
+        const useW = Math.min(iw, maxW);
+        const useH = Math.min(ih, maxH);
+        if (useW < 1 || useH < 1) continue;
+        const overlay = (useW < iw || useH < ih)
+          ? await sharp(input).extract({ left: 0, top: 0, width: useW, height: useH }).png().toBuffer()
+          : input;
+        baseBuf = await sharp(baseBuf).composite([{ input: overlay, left, top }]).png().toBuffer();
+      }
+      let composed = sharp(baseBuf);
       try {
         const extractLeft = r.x - virtual.x;
         const extractTop = r.y - virtual.y;
@@ -483,7 +536,18 @@ async function captureFrame(): Promise<Buffer> {
         }).toBuffer();
       } catch (err) {
         logError('Region extract (multi-monitor) failed:', (err as Error)?.message);
-        throw err;
+        log('Region multi-monitor fallback: capturing first intersecting display only');
+        const disp = displaysIntersecting[0] ?? electronDisplays[0];
+        const displayIndex = electronDisplays.indexOf(disp);
+        const screenId = listDisplays[displayIndex]?.id ?? listDisplays[0]?.id;
+        opts.screen = screenId ?? undefined;
+        opts.format = settings.format === 'jpeg' ? 'jpg' : 'png';
+        buf = await screenshot(opts);
+        const left = Math.max(0, Math.min(disp.bounds.width - 1, r.x - disp.bounds.x));
+        const top = Math.max(0, Math.min(disp.bounds.height - 1, r.y - disp.bounds.y));
+        const width = Math.max(1, Math.min(disp.bounds.width - left, r.width));
+        const height = Math.max(1, Math.min(disp.bounds.height - top, r.height));
+        buf = await sharp(buf).extract({ left, top, width, height }).toBuffer();
       }
       }
     }
@@ -559,9 +623,13 @@ function runCaptureLoop() {
       if (!buf || buf.length === 0) {
         throw new Error('Capture returned empty buffer (0 bytes)');
       }
+      const sessionFolder = currentSessionFolder;
+      if (!sessionFolder) {
+        return; // Stop was pressed while capture was in flight; skip writing
+      }
       const ext = settings.format === 'jpeg' ? 'jpg' : 'png';
       const nextIndex = frameIndex + 1;
-      const file = path.join(currentSessionFolder!, `frame_${String(nextIndex).padStart(6, '0')}.${ext}`);
+      const file = path.join(sessionFolder, `frame_${String(nextIndex).padStart(6, '0')}.${ext}`);
       await fs.promises.writeFile(file, buf);
       const stat = await fs.promises.stat(file);
       if (nextIndex === 1) {
