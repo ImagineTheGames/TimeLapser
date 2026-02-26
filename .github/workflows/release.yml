@@ -35,6 +35,9 @@ jobs:
           node scripts/build-electron-esbuild.js
           npx vite build
 
+      - name: Build Windows icon (256x256)
+        run: node scripts/build-win-icon.js
+
       - name: Build Windows installer
         run: npx electron-builder
         env:

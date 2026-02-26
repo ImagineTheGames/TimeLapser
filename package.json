@@ -1,6 +1,6 @@
 {
   "name": "timelapser",
-  "version": "1.0.15",
+  "version": "1.0.16",
   "description": "Timelapse software - record monitor, window, or region with session management and social export",
   "main": "dist-electron/main.js",
   "author": "",
@@ -14,7 +14,7 @@
     "electron:dev": "npm run build:electron && concurrently \"vite\" \"wait-on tcp:5173 && electron .\"",
     "pack": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder",
-    "dist:win": "node scripts/build-electron-esbuild.js && npx vite build && npx electron-builder",
+    "dist:win": "node scripts/build-electron-esbuild.js && node scripts/build-win-icon.js && npx vite build && npx electron-builder",
     "postinstall": "node scripts/patch-source-map.js"
   },
   "dependencies": {
@@ -36,6 +36,7 @@
     "concurrently": "^8.2.2",
     "electron": "^28.0.0",
     "electron-builder": "^24.9.1",
+    "png-to-ico": "^3.0.1",
     "source-map": "^0.6.1",
     "typescript": "^5.9.3",
     "vite": "^5.0.8",
@@ -61,7 +62,7 @@
       "public/**"
     ],
     "win": {
-      "icon": "public/icon.png",
+      "icon": "build/icon.png",
       "target": [
         "nsis"
       ]
@@ -69,8 +70,8 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "installerIcon": "public/icon.png",
-      "uninstallerIcon": "public/icon.png"
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico"
     }
   }
 }
