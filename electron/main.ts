@@ -456,8 +456,11 @@ async function captureFrame(): Promise<Buffer> {
       const inputs: { input: Buffer; left: number; top: number }[] = [];
       for (let i = 0; i < electronDisplays.length && i < allBuffers.length; i++) {
         const b = electronDisplays[i].bounds;
+        const resized = await sharp(allBuffers[i])
+          .resize(b.width, b.height, { fit: 'fill' })
+          .toBuffer();
         inputs.push({
-          input: allBuffers[i],
+          input: resized,
           left: b.x - virtual.x,
           top: b.y - virtual.y,
         });
