@@ -93,6 +93,24 @@ Output is in `release/`.
 | Facebook Reels     | 90 s        | 9:16   | 1080×1920    |
 | Facebook Stories   | 60 s        | 9:16   | 1440×2560    |
 
+## Getting logs (troubleshooting)
+
+If you run into errors (e.g. recording not starting, capture failures, export issues), the main process writes a log file that can help diagnose the problem.
+
+**Log file location (installed app):**
+
+- **Windows:** `%APPDATA%\timelapser\logs\main.log`  
+  - To open the folder: press `Win + R`, type `%APPDATA%\timelapser\logs`, press Enter.  
+  - The file `main.log` is appended each time you run TimeLapser.
+
+**What to do:**
+
+1. Reproduce the issue (e.g. press Record, then Stop after a few seconds).
+2. Close TimeLapser so the log is flushed.
+3. Open the folder above and attach or copy the contents of `main.log` when reporting the issue (e.g. in a GitHub issue or support request). You can trim to the last 50–100 lines if the file is large.
+
+The log includes startup, recording start/stop, capture errors (with file path when a frame write fails), and overlay/renderer errors when reported.
+
 ## Third-party
 
 - **FFmpeg** ([ffmpeg.org](https://ffmpeg.org)) is used for video encoding on export. This software uses code from the FFmpeg project, licensed under the GPL v2+ / LGPL. FFmpeg source and full legal information: [ffmpeg.org/legal.html](https://ffmpeg.org/legal.html).

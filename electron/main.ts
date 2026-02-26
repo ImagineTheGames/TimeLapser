@@ -400,14 +400,21 @@ async function captureFrame(): Promise<Buffer> {
   return pipeline.toBuffer();
 }
 
+/** Local time as session_YYYY-MM-DDTHH-mm-ss (filesystem-safe, matches user's system time). */
+function localSessionTimestamp(): string {
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}-${pad(d.getMinutes())}-${pad(d.getSeconds())}`;
+}
+
 function startNewSession(): string {
   const base = settings.outputFolder;
   if (!fs.existsSync(base)) fs.mkdirSync(base, { recursive: true });
-  const name = `session_${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}`;
+  const name = `session_${localSessionTimestamp()}`;
   const sessionPath = path.join(base, name);
   fs.mkdirSync(sessionPath, { recursive: true });
   const meta = {
-    startedAt: new Date().toISOString(),
+    startedAt: new Date().toLocaleString(undefined, { dateStyle: 'full', timeStyle: 'long' }),
     intervalSeconds: settings.intervalSeconds,
     source: settings.source,
     width: settings.width,
@@ -420,14 +427,24 @@ function startNewSession(): string {
 
 function runCaptureLoop() {
   if (captureState !== 'recording' || !currentSessionFolder) return;
+  const isFirstFrame = frameIndex === 0;
+  if (isFirstFrame) {
+    log('Capture loop: first frame scheduled', { intervalSeconds: settings.intervalSeconds });
+  }
   captureFrame()
     .then(async (buf) => {
       const ext = settings.format === 'jpeg' ? 'jpg' : 'png';
-      const file = path.join(currentSessionFolder!, `frame_${String(++frameIndex).padStart(6, '0')}.${ext}`);
+      const nextIndex = frameIndex + 1;
+      const file = path.join(currentSessionFolder!, `frame_${String(nextIndex).padStart(6, '0')}.${ext}`);
       await fs.promises.writeFile(file, buf);
+      frameIndex = nextIndex;
+      if (nextIndex === 1) {
+        log('Capture loop: first frame saved', file);
+      }
     })
     .catch((err) => {
-      log('Capture error:', (err as Error)?.message ?? err);
+      const file = currentSessionFolder ? path.join(currentSessionFolder, `frame_${String(frameIndex + 1).padStart(6, '0')}.${settings.format === 'jpeg' ? 'jpg' : 'png'}`) : '(no session)';
+      log('Capture error:', (err as Error)?.message ?? err, 'path:', file);
     })
     .finally(() => {
       if (captureState === 'recording') {
@@ -482,6 +499,7 @@ ipcMain.handle('start-region-pick', async (e) => {
     y: bounds.y,
     width: bounds.width,
     height: bounds.height,
+    show: false,
     frame: false,
     transparent: true,
     alwaysOnTop: true,
@@ -500,11 +518,19 @@ ipcMain.handle('start-region-pick', async (e) => {
   const pickerHtmlPath = path.join(__dirname, 'region-picker.html');
   regionPickerWindow.loadFile(pickerHtmlPath);
   regionPickerWindow.webContents.once('did-finish-load', () => {
-    if (regionPickerWindow && !regionPickerWindow.isDestroyed()) {
-      regionPickerWindow.webContents.executeJavaScript(
-        `window.__PICKER_BOUNDS__ = ${JSON.stringify(bounds)};`
+    if (!regionPickerWindow || regionPickerWindow.isDestroyed()) return;
+    regionPickerWindow.setBounds(bounds);
+    setImmediate(() => {
+      if (!regionPickerWindow || regionPickerWindow.isDestroyed()) return;
+      const actual = regionPickerWindow.getBounds();
+      const effectiveBounds = (actual.width >= bounds.width * 0.95 && actual.height >= bounds.height * 0.95)
+        ? bounds
+        : { x: actual.x, y: actual.y, width: actual.width, height: actual.height };
+      regionPickerWindow!.webContents.executeJavaScript(
+        `window.__PICKER_BOUNDS__ = ${JSON.stringify(effectiveBounds)};`
       ).catch(() => {});
-    }
+      regionPickerWindow!.show();
+    });
   });
   regionPickerWindow.on('closed', () => {
     regionPickerWindow = null;
@@ -674,7 +700,10 @@ ipcMain.handle('get-state', () => {
 });
 
 ipcMain.handle('start-recording', async (_e, newSession: unknown) => {
-  if (captureState === 'recording') return { ok: false, message: 'Already recording' };
+  if (captureState === 'recording') {
+    log('start-recording: rejected (already recording)');
+    return { ok: false, message: 'Already recording' };
+  }
   settings = getSettings();
   const wantNewSession = newSession === true;
   if (wantNewSession || !currentSessionFolder) {
@@ -694,6 +723,14 @@ ipcMain.handle('start-recording', async (_e, newSession: unknown) => {
     }
   }
   captureState = 'recording';
+  log('start-recording: ok', {
+    sessionFolder: currentSessionFolder,
+    intervalSeconds: settings.intervalSeconds,
+    source: settings.source,
+    monitorId: settings.monitorId,
+    hasRegion: !!settings.region,
+    outputFolder: settings.outputFolder,
+  });
   runCaptureLoop();
   return { ok: true, sessionFolder: currentSessionFolder };
 });
@@ -718,6 +755,7 @@ ipcMain.handle('resume-recording', () => {
 ipcMain.handle('stop-recording', () => {
   const wasRecording = captureState === 'recording' || captureState === 'paused';
   const count = frameIndex;
+  log('stop-recording', { wasRecording, frameCount: count, sessionFolder: currentSessionFolder ?? undefined });
   if (captureTimer) {
     clearTimeout(captureTimer);
     captureTimer = null;

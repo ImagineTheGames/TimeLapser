@@ -54,8 +54,10 @@ export default function App() {
   }, [expanded, showExport]);
 
   const handleStart = (newSession: boolean) => {
+    window.timelapser.logFromRenderer?.(`Record clicked (newSession=${newSession})`);
     window.timelapser.startRecording(newSession).then((r) => {
       if (r.ok) refreshState();
+      else window.timelapser.logFromRenderer?.(`startRecording returned ok=false: ${r.message ?? 'unknown'}`);
     });
   };
 
