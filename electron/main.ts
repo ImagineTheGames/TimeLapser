@@ -173,6 +173,7 @@ function ensureOverlayWindow() {
   log('Preload path:', preloadPath, 'exists:', fs.existsSync(preloadPath));
   const { x, y } = getOverlayPosition();
   const iconPath = getAppIconPath();
+  const appVersion = app.getVersion();
   overlayWindow = new BrowserWindow({
     width: 420,
     height: OVERLAY_HEIGHT_COLLAPSED,
@@ -180,6 +181,7 @@ function ensureOverlayWindow() {
     y,
     show: false,
     frame: false,
+    title: `TimeLapser ${appVersion}`,
     transparent: true,
     alwaysOnTop: true,
     skipTaskbar: true,
@@ -398,6 +400,22 @@ async function createWindow() {
   }
 }
 
+/** Region (DIP) to physical pixel extract params for a display. Capture from screenshot-desktop is in physical pixels. */
+function regionToPhysicalExtract(
+  r: { x: number; y: number; width: number; height: number },
+  disp: Electron.Display
+): { left: number; top: number; width: number; height: number } {
+  const scale = disp.scaleFactor ?? 1;
+  const dip = disp.bounds;
+  const capW = Math.round(dip.width * scale);
+  const capH = Math.round(dip.height * scale);
+  const left = Math.max(0, Math.min(capW - 1, Math.round((r.x - dip.x) * scale)));
+  const top = Math.max(0, Math.min(capH - 1, Math.round((r.y - dip.y) * scale)));
+  const width = Math.max(1, Math.min(capW - left, Math.round(r.width * scale)));
+  const height = Math.max(1, Math.min(capH - top, Math.round(r.height * scale)));
+  return { left, top, width, height };
+}
+
 async function captureFrame(): Promise<Buffer> {
   const opts: { screen?: number; format?: 'png' | 'jpg' } = {};
   const listDisplays = await screenshot.listDisplays();
@@ -425,10 +443,7 @@ async function captureFrame(): Promise<Buffer> {
       if (screenId != null) opts.screen = screenId;
       opts.format = settings.format === 'jpeg' ? 'jpg' : 'png';
       buf = await screenshot(opts);
-      const left = Math.max(0, Math.min(disp.bounds.width - 1, r.x - disp.bounds.x));
-      const top = Math.max(0, Math.min(disp.bounds.height - 1, r.y - disp.bounds.y));
-      const width = Math.max(1, Math.min(disp.bounds.width - left, r.width));
-      const height = Math.max(1, Math.min(disp.bounds.height - top, r.height));
+      const { left, top, width, height } = regionToPhysicalExtract(r, disp);
       try {
         buf = await sharp(buf).extract({ left, top, width, height }).toBuffer();
       } catch (err) {
@@ -471,21 +486,24 @@ async function captureFrame(): Promise<Buffer> {
         const rawTop = Math.round(b.y - virtual.y);
         const left = Math.max(0, Math.min(rawLeft, virtual.width - 1));
         const top = Math.max(0, Math.min(rawTop, virtual.height - 1));
-        // Ensure overlay fits inside composite: placeW/H must satisfy left+placeW<=virtual.width, top+placeH<=virtual.height
-        const placeW = Math.max(1, Math.min(b.width, virtual.width - left));
-        const placeH = Math.max(1, Math.min(b.height, virtual.height - top));
+        // Slot size: must not exceed base (Sharp requires overlay not to extend past base)
+        const slotW = Math.max(1, Math.floor(virtual.width - left));
+        const slotH = Math.max(1, Math.floor(virtual.height - top));
+        const placeW = Math.min(b.width, slotW);
+        const placeH = Math.min(b.height, slotH);
         let overlayBuf = await sharp(displayBuf)
           .resize(placeW, placeH, { fit: 'fill' })
           .ensureAlpha()
           .png()
           .toBuffer();
-        // Force exact dimensions (sharp composite requires overlay not to exceed base; resize can vary with source)
         const meta = await sharp(overlayBuf).metadata();
         const ow = meta.width ?? placeW;
         const oh = meta.height ?? placeH;
-        if (ow > placeW || oh > placeH) {
+        const fitW = Math.min(placeW, ow, slotW);
+        const fitH = Math.min(placeH, oh, slotH);
+        if (fitW < ow || fitH < oh) {
           overlayBuf = await sharp(overlayBuf)
-            .extract({ left: 0, top: 0, width: Math.min(placeW, ow), height: Math.min(placeH, oh) })
+            .extract({ left: 0, top: 0, width: fitW, height: fitH })
             .png()
             .toBuffer();
         }
@@ -498,10 +516,7 @@ async function captureFrame(): Promise<Buffer> {
         opts.screen = screenId ?? undefined;
         opts.format = settings.format === 'jpeg' ? 'jpg' : 'png';
         buf = await screenshot(opts);
-        const left = Math.max(0, Math.min(disp.bounds.width - 1, r.x - disp.bounds.x));
-        const top = Math.max(0, Math.min(disp.bounds.height - 1, r.y - disp.bounds.y));
-        const width = Math.max(1, Math.min(disp.bounds.width - left, r.width));
-        const height = Math.max(1, Math.min(disp.bounds.height - top, r.height));
+        const { left, top, width, height } = regionToPhysicalExtract(r, disp);
         buf = await sharp(buf).extract({ left, top, width, height }).toBuffer();
       } else {
       // Composite one overlay at a time to avoid "same dimensions or smaller" with multiple inputs
@@ -514,10 +529,10 @@ async function captureFrame(): Promise<Buffer> {
         const meta = await sharp(input).metadata();
         const iw = meta.width ?? 0;
         const ih = meta.height ?? 0;
-        const maxW = virtual.width - left;
-        const maxH = virtual.height - top;
-        const useW = Math.min(iw, maxW);
-        const useH = Math.min(ih, maxH);
+        const maxW = Math.floor(virtual.width - left);
+        const maxH = Math.floor(virtual.height - top);
+        const useW = Math.max(0, Math.min(iw, maxW));
+        const useH = Math.max(0, Math.min(ih, maxH));
         if (useW < 1 || useH < 1) continue;
         const overlay = (useW < iw || useH < ih)
           ? await sharp(input).extract({ left: 0, top: 0, width: useW, height: useH }).png().toBuffer()
@@ -543,10 +558,7 @@ async function captureFrame(): Promise<Buffer> {
         opts.screen = screenId ?? undefined;
         opts.format = settings.format === 'jpeg' ? 'jpg' : 'png';
         buf = await screenshot(opts);
-        const left = Math.max(0, Math.min(disp.bounds.width - 1, r.x - disp.bounds.x));
-        const top = Math.max(0, Math.min(disp.bounds.height - 1, r.y - disp.bounds.y));
-        const width = Math.max(1, Math.min(disp.bounds.width - left, r.width));
-        const height = Math.max(1, Math.min(disp.bounds.height - top, r.height));
+        const { left, top, width, height } = regionToPhysicalExtract(r, disp);
         buf = await sharp(buf).extract({ left, top, width, height }).toBuffer();
       }
       }
@@ -723,9 +735,9 @@ ipcMain.handle('start-region-pick', async (e) => {
     setImmediate(() => {
       if (!regionPickerWindow || regionPickerWindow.isDestroyed()) return;
       const actual = regionPickerWindow.getBounds();
-      const effectiveBounds = (actual.width >= bounds.width * 0.95 && actual.height >= bounds.height * 0.95)
-        ? bounds
-        : { x: actual.x, y: actual.y, width: actual.width, height: actual.height };
+      // Use actual window bounds so client coords map to real screen position.
+      // (OS may move the window, e.g. clamp negative coords; virtual bounds would then be wrong.)
+      const effectiveBounds = { x: actual.x, y: actual.y, width: actual.width, height: actual.height };
       regionPickerWindow!.webContents.executeJavaScript(
         `window.__PICKER_BOUNDS__ = ${JSON.stringify(effectiveBounds)};`
       ).catch(() => {});
