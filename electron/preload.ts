@@ -30,6 +30,10 @@ contextBridge.exposeInMainWorld('timelapser', {
   setOverlayHeight: (height: number) => ipcRenderer.send('set-overlay-height', height),
   closeOverlay: () => ipcRenderer.send('close-overlay'),
   getOverlayBoundsAndWorkArea: () => ipcRenderer.invoke('get-overlay-bounds-and-work-area'),
+  getMainLogContents: (maxLines?: number) => ipcRenderer.invoke('get-main-log-contents', maxLines),
+  getStartupFlags: () => ipcRenderer.invoke('get-startup-flags'),
+  sendRecordingTestComplete: (payload: { success: boolean; failureReason?: string; logExcerpt?: string }) =>
+    ipcRenderer.invoke('recording-test-complete', payload),
   startRegionPick: () => ipcRenderer.invoke('start-region-pick'),
   onRegionPicked: (callback: (region: { x: number; y: number; width: number; height: number } | null) => void) => {
     const fn = (_e: Electron.IpcRendererEvent, region: { x: number; y: number; width: number; height: number } | null) => callback(region);

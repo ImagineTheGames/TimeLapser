@@ -1,5 +1,7 @@
 /// <reference types="vite/client" />
 
+declare const __APP_VERSION__: string;
+
 interface TimeLapserAPI {
   getDisplays: () => Promise<{ id: number; index: number; name: string; bounds: { x: number; y: number; width: number; height: number } }[]>;
   getSettings: () => Promise<CaptureSettings>;
@@ -30,6 +32,9 @@ interface TimeLapserAPI {
   setOverlayHeight: (height: number) => void;
   closeOverlay: () => void;
   getOverlayBoundsAndWorkArea: () => Promise<{ bounds: { x: number; y: number; width: number; height: number }; workArea: { x: number; y: number; width: number; height: number }; panelOnRight?: boolean }>;
+  getMainLogContents: (maxLines?: number) => Promise<string>;
+  getStartupFlags: () => Promise<{ runRecordingTest: boolean }>;
+  sendRecordingTestComplete: (payload: { success: boolean; failureReason?: string; logExcerpt?: string }) => Promise<void>;
   startRegionPick: () => Promise<void>;
   onRegionPicked: (callback: (region: { x: number; y: number; width: number; height: number } | null) => void) => () => void;
   onCollapsePanels: (callback: () => void) => () => void;

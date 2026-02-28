@@ -233,3 +233,32 @@
 .settings-panel__row--inline input {
   width: 72px;
 }
+
+.settings-panel__test-section {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(148, 163, 184, 0.15);
+}
+
+.settings-panel__test-section .settings-panel__label {
+  margin-bottom: 4px;
+}
+
+.settings-panel__test-section .settings-panel__hint {
+  margin-bottom: 10px;
+}
+
+.settings-panel__test-log {
+  margin: 10px 0 0;
+  padding: 10px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #94a3b8;
+  background: rgba(15, 23, 42, 0.8);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 6px;
+  max-height: 200px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

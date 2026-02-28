@@ -18,6 +18,16 @@ export default function App() {
   const [showExport, setShowExport] = useState(false);
   const [exportSessionFolder, setExportSessionFolder] = useState<string | null>(null);
   const [sessionSizeBytes, setSessionSizeBytes] = useState<number>(0);
+  const [autoRunRecordingTest, setAutoRunRecordingTest] = useState(false);
+
+  useEffect(() => {
+    window.timelapser.getStartupFlags?.().then((flags) => {
+      if (flags?.runRecordingTest) {
+        setExpanded(true);
+        setAutoRunRecordingTest(true);
+      }
+    }).catch(() => {});
+  }, []);
 
   const refreshState = useCallback(() => {
     window.timelapser.getState().then(setState);
@@ -110,6 +120,7 @@ export default function App() {
                   onClose={() => setExpanded(false)}
                   onOpenFocusAssist={() => window.timelapser.openFocusAssist()}
                   inline
+                  autoRunRecordingTest={autoRunRecordingTest}
                 />
               </div>
               <div className="app__gap" />
@@ -142,6 +153,7 @@ export default function App() {
                   onClose={() => setExpanded(false)}
                   onOpenFocusAssist={() => window.timelapser.openFocusAssist()}
                   inline
+                  autoRunRecordingTest={autoRunRecordingTest}
                 />
               </div>
             </>

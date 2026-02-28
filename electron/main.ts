@@ -400,19 +400,23 @@ async function createWindow() {
   }
 }
 
-/** Region (DIP) to physical pixel extract params for a display. Capture from screenshot-desktop is in physical pixels. */
-function regionToPhysicalExtract(
+/** Region (DIP) to extract params. Uses capture dimensions to decide DIP vs physical (screenshot-desktop may return either). */
+function regionToExtract(
   r: { x: number; y: number; width: number; height: number },
-  disp: Electron.Display
+  disp: Electron.Display,
+  captureWidth: number,
+  captureHeight: number
 ): { left: number; top: number; width: number; height: number } {
-  const scale = disp.scaleFactor ?? 1;
   const dip = disp.bounds;
-  const capW = Math.round(dip.width * scale);
-  const capH = Math.round(dip.height * scale);
-  const left = Math.max(0, Math.min(capW - 1, Math.round((r.x - dip.x) * scale)));
-  const top = Math.max(0, Math.min(capH - 1, Math.round((r.y - dip.y) * scale)));
-  const width = Math.max(1, Math.min(capW - left, Math.round(r.width * scale)));
-  const height = Math.max(1, Math.min(capH - top, Math.round(r.height * scale)));
+  const scale = disp.scaleFactor ?? 1;
+  const capW = captureWidth;
+  const capH = captureHeight;
+  const isDipCapture = capW === dip.width && capH === dip.height;
+  const mult = isDipCapture ? 1 : scale;
+  const left = Math.max(0, Math.min(capW - 1, Math.round((r.x - dip.x) * mult)));
+  const top = Math.max(0, Math.min(capH - 1, Math.round((r.y - dip.y) * mult)));
+  const width = Math.max(1, Math.min(capW - left, Math.round(r.width * mult)));
+  const height = Math.max(1, Math.min(capH - top, Math.round(r.height * mult)));
   return { left, top, width, height };
 }
 
@@ -443,7 +447,10 @@ async function captureFrame(): Promise<Buffer> {
       if (screenId != null) opts.screen = screenId;
       opts.format = settings.format === 'jpeg' ? 'jpg' : 'png';
       buf = await screenshot(opts);
-      const { left, top, width, height } = regionToPhysicalExtract(r, disp);
+      const meta = await sharp(buf).metadata();
+      const capW = meta.width ?? disp.bounds.width;
+      const capH = meta.height ?? disp.bounds.height;
+      const { left, top, width, height } = regionToExtract(r, disp, capW, capH);
       try {
         buf = await sharp(buf).extract({ left, top, width, height }).toBuffer();
       } catch (err) {
@@ -516,7 +523,10 @@ async function captureFrame(): Promise<Buffer> {
         opts.screen = screenId ?? undefined;
         opts.format = settings.format === 'jpeg' ? 'jpg' : 'png';
         buf = await screenshot(opts);
-        const { left, top, width, height } = regionToPhysicalExtract(r, disp);
+        const meta0 = await sharp(buf).metadata();
+        const cw = meta0.width ?? disp.bounds.width;
+        const ch = meta0.height ?? disp.bounds.height;
+        const { left, top, width, height } = regionToExtract(r, disp, cw, ch);
         buf = await sharp(buf).extract({ left, top, width, height }).toBuffer();
       } else {
       // Composite one overlay at a time to avoid "same dimensions or smaller" with multiple inputs
@@ -558,7 +568,10 @@ async function captureFrame(): Promise<Buffer> {
         opts.screen = screenId ?? undefined;
         opts.format = settings.format === 'jpeg' ? 'jpg' : 'png';
         buf = await screenshot(opts);
-        const { left, top, width, height } = regionToPhysicalExtract(r, disp);
+        const metaF = await sharp(buf).metadata();
+        const cwF = metaF.width ?? disp.bounds.width;
+        const chF = metaF.height ?? disp.bounds.height;
+        const { left, top, width, height } = regionToExtract(r, disp, cwF, chF);
         buf = await sharp(buf).extract({ left, top, width, height }).toBuffer();
       }
       }
@@ -909,6 +922,45 @@ ipcMain.handle('get-state', () => {
     lastSessionFolder,
     continueTarget,
   };
+});
+
+const MAIN_LOG_TAIL_LINES = 1500;
+
+ipcMain.handle('get-main-log-contents', (_e, maxLines?: number) => {
+  const logPath = getLogFilePath();
+  if (!logPath || !fs.existsSync(logPath)) return '';
+  try {
+    const raw = fs.readFileSync(logPath, 'utf8');
+    const lines = raw.split(/\r?\n/);
+    const n = Math.max(0, Math.min(maxLines ?? MAIN_LOG_TAIL_LINES, lines.length));
+    return lines.slice(-n).join('\n');
+  } catch {
+    return '';
+  }
+});
+
+ipcMain.handle('get-startup-flags', () => {
+  const runRecordingTest = process.env.RUN_RECORDING_TEST === '1' || process.env.TIMELAPser_RUN_RECORDING_TEST === '1';
+  return { runRecordingTest };
+});
+
+ipcMain.handle('recording-test-complete', (_e, payload: { success: boolean; failureReason?: string; logExcerpt?: string }) => {
+  const userData = app.getPath('userData');
+  const resultPath = path.join(userData, 'recording-test-result.json');
+  const result = {
+    success: payload.success,
+    failureReason: payload.failureReason ?? null,
+    logExcerpt: payload.logExcerpt ?? null,
+    timestamp: new Date().toISOString(),
+  };
+  try {
+    fs.writeFileSync(resultPath, JSON.stringify(result, null, 2), 'utf8');
+  } catch (err) {
+    logError('recording-test-complete: failed to write result file', (err as Error)?.message);
+  }
+  const line = payload.success ? 'RECORDING_TEST_FINISHED success' : 'RECORDING_TEST_FINISHED failure';
+  log(line);
+  writeToLogFile(line, []);
 });
 
 ipcMain.handle('start-recording', async (_e, newSession: unknown) => {

@@ -17,6 +17,10 @@ window.addEventListener('unhandledrejection', (e) => {
   reportRendererError(`Unhandled rejection: ${e.reason}`, typeof e.reason?.stack === 'string' ? e.reason.stack : undefined);
 });
 
+if (typeof __APP_VERSION__ !== 'undefined') {
+  document.title = `TimeLapser ${__APP_VERSION__}`;
+}
+
 const root = document.getElementById('root');
 if (root) {
   ReactDOM.createRoot(root).render(
