@@ -48,7 +48,7 @@ export default function Overlay({
     <div className={`overlay ${expanded ? 'overlay--expanded' : ''}`}>
       <div className="overlay__bar">
         <div className="overlay__titlebar">
-          <span className="overlay__title">TimeLapser</span>
+          <span className="overlay__title">TimeLapser{typeof __APP_VERSION__ !== 'undefined' ? ` ${__APP_VERSION__}` : ''}</span>
           <button
             type="button"
             className="overlay__close"

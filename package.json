@@ -1,6 +1,6 @@
 {
   "name": "timelapser",
-  "version": "1.0.22",
+  "version": "1.0.23",
   "description": "Timelapse software - record monitor, window, or region with session management and social export",
   "main": "dist-electron/main.js",
   "author": "",
@@ -16,6 +16,7 @@
     "dist": "npm run build && electron-builder",
     "dist:win": "node scripts/build-electron-esbuild.js && node scripts/build-win-icon.js && npx vite build && npx electron-builder",
     "test:recording": "node scripts/run-recording-test.js",
+    "release:check": "node scripts/build-electron-esbuild.js && npx vite build && node scripts/run-recording-test.js",
     "postinstall": "node scripts/patch-source-map.js"
   },
   "dependencies": {

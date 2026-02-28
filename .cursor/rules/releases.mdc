@@ -1,0 +1,77 @@
+---
+description: When creating or planning a release - build, automated test, version bump, changelog, tag, and GitHub release with professional notes.
+globs: ["package.json", "README.md", ".github/workflows/*.yml", "RELEASE_NOTES*.md", "CHANGELOG.md", "scripts/run-recording-test.js"]
+---
+
+# Release process (TimeLapser)
+
+When making a **new release**, follow this workflow in order. **Do not skip steps.** Release only when the automated recording test passes.
+
+## 1. Build and automated test (mandatory before any release)
+
+- **Build the production app**  
+  From project root:
+  ```bash
+  node scripts/build-electron-esbuild.js
+  npx vite build
+  ```
+  (Or use `npm run dist:win` if you need the full Windows installer build.)
+- **Run the automated recording test**  
+  ```bash
+  npm run test:recording
+  ```
+  This spawns Electron with the built app, runs the full recording test (monitors, regions, exports), and exits 0 only on success.
+- **If the test fails or times out**  
+  Fix the issue, rebuild, and run the test again. **Do not** create a release or push a tag until the test passes.
+- **If the test passes**  
+  Proceed to the pre-release checklist and release steps below.
+
+## 2. Pre-release checklist
+
+- **Version bump (mandatory when making packages)**  
+  Bump the version in `package.json` (e.g. `1.0.7` → `1.0.8`). Use a patch bump for small fixes; minor/major when appropriate. Do not produce two packages with the same version.
+- Update **README.md** if any user-facing features or behaviour changed.
+- **Release notes (mandatory for every GitHub release)**  
+  Create **both**:
+  - `release-notes/vX.Y.Z.md` – used by the workflow as the release body.
+  - `RELEASE_NOTES_vX.Y.Z.md` – same content in repo root for `gh release edit` and reference.
+  Never push a tag without creating and committing these files first. See format below.
+
+## 3. Release notes format (professional)
+
+The release notes file is the **GitHub release description**. Keep it concise and scannable.
+
+**Required structure:**
+
+- **Title**: `# TimeLapser vX.Y.Z` (or `# Release notes – vX.Y.Z`).
+- **Sections** with `##` headings, e.g. **New**, **Changed**, **Fixed**.
+- **Bullets**: Use `-` with **bold** for the main idea, then a short explanation. One line per bullet when possible.
+- **No** raw commit logs or vague “various fixes” without a one-line description.
+
+End with an **Install** line:  
+`Download the Windows installer from the [Releases](https://github.com/ImagineTheGames/TimeLapser/releases) page.`
+
+## 4. Git and tag
+
+- Commit all release-related changes (version, README, **both** `release-notes/vX.Y.Z.md` and `RELEASE_NOTES_vX.Y.Z.md`) with a clear message, e.g. `v1.0.8: add X, fix Y`.
+- Push to `origin main`.
+- **Only then** create and push the tag:  
+  `git tag -a vX.Y.Z -m "vX.Y.Z: short summary"` and `git push origin vX.Y.Z`.
+- **Never** push a tag without release notes already committed and pushed.
+
+## 5. GitHub release description (mandatory)
+
+The GitHub release must **not** be left with only auto-generated changelog.
+
+- After the workflow creates the release (on tag push), set the description from the notes file:
+  ```bash
+  gh release edit vX.Y.Z --notes-file RELEASE_NOTES_vX.Y.Z.md
+  ```
+- Confirm on the release page that the description shows the written patch notes.
+
+## 6. Summary
+
+- **Always** build and run `npm run test:recording` before a release. **Release only if the test passes.**
+- Create **both** `release-notes/vX.Y.Z.md` and `RELEASE_NOTES_vX.Y.Z.md` (same content).
+- **Never** push a tag without release notes. **Never** leave a GitHub release with only auto-generated or empty description.
+- If the workflow did not attach the notes, run `gh release edit vX.Y.Z --notes-file RELEASE_NOTES_vX.Y.Z.md`.

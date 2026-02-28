@@ -18,7 +18,7 @@ const APPDATA = process.env.APPDATA || process.env.LOCALAPPDATA || '';
 const DEFAULT_USER_DATA = path.join(APPDATA, 'timelapser');
 const RESULT_FILE_DEFAULT = path.join(DEFAULT_USER_DATA, 'recording-test-result.json');
 const LOG_FILE_DEFAULT = path.join(DEFAULT_USER_DATA, 'logs', 'main.log');
-const TIMEOUT_MS = 5 * 60 * 1000;
+const TIMEOUT_MS = 8 * 60 * 1000;
 const POLL_MS = 2000;
 
 function ensureDir(dir) {

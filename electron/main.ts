@@ -129,8 +129,22 @@ function saveSettings(s: CaptureSettings) {
   store.set('captureSettings', s);
 }
 
+/** Default false for new users: do not start with Windows until the user enables it. */
 function getOpenAtLogin(): boolean {
   return (store.get('openAtLogin') as boolean | undefined) ?? false;
+}
+
+/** True if we should show the overlay on startup (first run, reinstall/upgrade, or user has not enabled Start with Windows). */
+function shouldShowWindowOnStartup(): boolean {
+  const openAtLogin = getOpenAtLogin();
+  const currentVersion = app.getVersion();
+  const lastSeenVersion = store.get('lastSeenVersion') as string | undefined;
+  const isFirstRunOrUpgrade = lastSeenVersion !== currentVersion;
+  return !openAtLogin || isFirstRunOrUpgrade;
+}
+
+function markStartupWindowShown(): void {
+  store.set('lastSeenVersion', app.getVersion());
 }
 
 function getContinueSessionPath(): string | null {
@@ -239,20 +253,26 @@ function ensureOverlayWindow() {
     overlayLoadFailed = false;
     logMinimal('Overlay finished loading');
     if (overlayWindow && !overlayWindow.isDestroyed()) {
-      overlayWindow.show();
-      overlayWindow.focus();
-      overlayWindow.setAlwaysOnTop(true, 'screen-saver');
-      if (process.platform === 'win32') {
-        setTimeout(() => bringOverlayToFront(), 1500);
-        setTimeout(() => bringOverlayToFront(), 3500);
+      if (shouldShowWindowOnStartup()) {
+        markStartupWindowShown();
+        overlayWindow.show();
+        overlayWindow.focus();
+        overlayWindow.setAlwaysOnTop(true, 'screen-saver');
+        if (process.platform === 'win32') {
+          setTimeout(() => bringOverlayToFront(), 1500);
+          setTimeout(() => bringOverlayToFront(), 3500);
+        }
       }
     }
   });
   overlayWindow.once('ready-to-show', () => {
     if (overlayWindow && !overlayWindow.isDestroyed() && !overlayWindow.isVisible()) {
-      overlayWindow.show();
-      overlayWindow.focus();
-      overlayWindow.setAlwaysOnTop(true, 'screen-saver');
+      if (shouldShowWindowOnStartup()) {
+        markStartupWindowShown();
+        overlayWindow.show();
+        overlayWindow.focus();
+        overlayWindow.setAlwaysOnTop(true, 'screen-saver');
+      }
     }
   });
   // Keep app in tray: close button and Alt+F4 hide the overlay instead of destroying it (unless quitting)
@@ -873,9 +893,25 @@ ipcMain.on('set-overlay-height', (e, height: number) => {
   log('Overlay height set:', height);
 });
 
+const GET_DISPLAYS_TIMEOUT_MS = 5000;
+
 ipcMain.handle('get-displays', async () => {
+  const fallback = () => {
+    const displays = screen.getAllDisplays();
+    return displays.map((d, i) => ({
+      id: i,
+      index: i,
+      name: d.label || `Display ${i + 1}`,
+      bounds: d.bounds ?? d.workArea ?? { x: 0, y: 0, width: 1920, height: 1080 },
+    }));
+  };
   try {
-    const list = await screenshot.listDisplays();
+    const list = await Promise.race([
+      screenshot.listDisplays(),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('listDisplays timeout')), GET_DISPLAYS_TIMEOUT_MS)
+      ),
+    ]);
     const displays = screen.getAllDisplays();
     return list.map((d, i) => ({
       id: d.id,
@@ -885,13 +921,7 @@ ipcMain.handle('get-displays', async () => {
     }));
   } catch (err) {
     logError('get-displays failed (using Electron screen fallback):', (err as Error).message);
-    const displays = screen.getAllDisplays();
-    return displays.map((d, i) => ({
-      id: i,
-      index: i,
-      name: d.label || `Display ${i + 1}`,
-      bounds: d.bounds ?? d.workArea ?? { x: 0, y: 0, width: 1920, height: 1080 },
-    }));
+    return fallback();
   }
 });
 
@@ -940,7 +970,7 @@ ipcMain.handle('get-main-log-contents', (_e, maxLines?: number) => {
 });
 
 ipcMain.handle('get-startup-flags', () => {
-  const runRecordingTest = process.env.RUN_RECORDING_TEST === '1' || process.env.TIMELAPser_RUN_RECORDING_TEST === '1';
+  const runRecordingTest = process.env.RUN_RECORDING_TEST === '1';
   return { runRecordingTest };
 });
 

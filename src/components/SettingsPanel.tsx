@@ -243,7 +243,8 @@ export default function SettingsPanel({ sessionFolder, frameCount, onClose, onOp
       };
 
       const exportPair = async (sessionFolder: string, nameBase: string) => {
-        const base = { sessionFolder, platform: 'custom', format: 'mp4' as const, maxDurationSeconds: 0, fps: 30, cropToFit: false, quality: 70 };
+        // Use 2 fps so 10 frames = 5 seconds
+        const base = { sessionFolder, platform: 'custom', format: 'mp4' as const, maxDurationSeconds: 0, fps: 2, cropToFit: false, quality: 70 };
         const r169 = await window.timelapser.exportVideo({ ...base, outputPath: join(outputFolder, `${nameBase}_16_9.mp4`), width: 1920, height: 1080 });
         const r916 = await window.timelapser.exportVideo({ ...base, outputPath: join(outputFolder, `${nameBase}_9_16.mp4`), width: 1080, height: 1920 });
         return r169.ok && r916.ok;
@@ -357,23 +358,31 @@ export default function SettingsPanel({ sessionFolder, frameCount, onClose, onOp
     const maxWait = 20000;
     const intervalMs = 800;
     const started = Date.now();
-    const id = setInterval(async () => {
+
+    const tryStart = async () => {
       if (Date.now() - started >= maxWait) {
-        clearInterval(id);
         window.timelapser.sendRecordingTestComplete({
           success: false,
           failureReason: 'No displays detected after 20s',
           logExcerpt: 'No displays',
         });
-        return;
+        return true;
       }
       const fetched = displays.length > 0 ? displays : await window.timelapser.getDisplays().catch(() => []);
       if (fetched && fetched.length > 0) {
-        clearInterval(id);
         if (fetched !== displays) setDisplays(fetched);
         runRecordingTest(fetched);
+        return true;
       }
+      return false;
+    };
+
+    const id = setInterval(async () => {
+      if (await tryStart()) clearInterval(id);
     }, intervalMs);
+    tryStart().then((done) => {
+      if (done) clearInterval(id);
+    });
     return () => clearInterval(id);
   }, [autoRunRecordingTest, testRunning]);
 
