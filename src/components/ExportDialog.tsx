@@ -985,6 +985,7 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
                     <>
                       <label className="export-dialog__row">
                         <span>Target video length (s)</span>
+                        <span className="export-dialog__hint">How long your timelapse will be.</span>
                         <input
                           type="number"
                           min={0}

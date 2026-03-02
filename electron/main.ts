@@ -138,13 +138,9 @@ function getOpenAtLogin(): boolean {
   return (store.get('openAtLogin') as boolean | undefined) ?? false;
 }
 
-/** True if we should show the overlay on startup (first run, reinstall/upgrade, or user has not enabled Start with Windows). */
+/** True if we should show the overlay on startup. We always show so that when the user launches the app (e.g. installer "Run", Start menu) the window is visible. "Start with Windows" only controls whether the app runs at login; we don't start minimized. */
 function shouldShowWindowOnStartup(): boolean {
-  const openAtLogin = getOpenAtLogin();
-  const currentVersion = app.getVersion();
-  const lastSeenVersion = store.get('lastSeenVersion') as string | undefined;
-  const isFirstRunOrUpgrade = lastSeenVersion !== currentVersion;
-  return !openAtLogin || isFirstRunOrUpgrade;
+  return true;
 }
 
 function markStartupWindowShown(): void {
@@ -252,10 +248,14 @@ function ensureOverlayWindow() {
     if (overlayWindow && !overlayWindow.isDestroyed()) {
       if (shouldShowWindowOnStartup()) {
         markStartupWindowShown();
+        if (overlayWindow.isMinimized()) overlayWindow.restore();
         overlayWindow.show();
         overlayWindow.focus();
         overlayWindow.setAlwaysOnTop(true, 'screen-saver');
+        // Force overlay to the front (e.g. after install when launched from installer "Run")
+        setImmediate(() => bringOverlayToFront());
         if (process.platform === 'win32') {
+          setTimeout(() => bringOverlayToFront(), 300);
           setTimeout(() => bringOverlayToFront(), 1500);
           setTimeout(() => bringOverlayToFront(), 3500);
         }
@@ -266,9 +266,11 @@ function ensureOverlayWindow() {
     if (overlayWindow && !overlayWindow.isDestroyed() && !overlayWindow.isVisible()) {
       if (shouldShowWindowOnStartup()) {
         markStartupWindowShown();
+        if (overlayWindow.isMinimized()) overlayWindow.restore();
         overlayWindow.show();
         overlayWindow.focus();
         overlayWindow.setAlwaysOnTop(true, 'screen-saver');
+        setImmediate(() => bringOverlayToFront());
       }
     }
   });
@@ -894,27 +896,54 @@ ipcMain.on('set-overlay-height', (e, height: number) => {
 
 const GET_DISPLAYS_TIMEOUT_MS = 5000;
 
+/** Common display widths/heights so we can snap off-by-one rounding errors (e.g. 3441 → 3440). */
+const COMMON_DISPLAY_DIMENSIONS = [5120, 3840, 3440, 2560, 1920, 1680, 1600, 1440, 1366, 1280, 1080, 900, 864, 800, 768, 720, 600, 480];
+
+function snapToCommonDimension(n: number): number {
+  const rounded = Math.round(n);
+  for (const std of COMMON_DISPLAY_DIMENSIONS) {
+    if (Math.abs(rounded - std) <= 1) return std;
+  }
+  return rounded;
+}
+
 function displayPhysicalSize(bounds: { width: number; height: number }, scaleFactor: number | undefined): { width: number; height: number } {
   const s = scaleFactor ?? 1;
   const w = Math.floor(bounds.width);
   const h = Math.floor(bounds.height);
-  return { width: Math.floor(w * s), height: Math.floor(h * s) };
+  const width = Math.round(w * s);
+  const height = Math.round(h * s);
+  return { width: snapToCommonDimension(width), height: snapToCommonDimension(height) };
+}
+
+/** On Windows packaged app, Electron sometimes reports scaleFactor 1 for all displays; use primary's scaleFactor so physical size is correct. */
+function effectiveScaleFactor(d: Electron.Display, primary: Electron.Display): number {
+  const s = d.scaleFactor ?? 1;
+  if (process.platform === 'win32' && app.isPackaged && (s === 1 || d.scaleFactor == null)) {
+    const primaryScale = primary.scaleFactor ?? 1;
+    if (primaryScale > 1) return primaryScale;
+  }
+  return s;
 }
 
 ipcMain.handle('get-displays', async () => {
-  const fallback = () => {
+  const electronDisplayList = () => {
     const displays = screen.getAllDisplays();
+    const primary = screen.getPrimaryDisplay();
     return displays.map((d, i) => {
       const bounds = d.bounds ?? d.workArea ?? { x: 0, y: 0, width: 1920, height: 1080 };
+      const scale = effectiveScaleFactor(d, primary);
       return {
         id: i,
         index: i,
         name: d.label || `Display ${i + 1}`,
         bounds,
-        physicalSize: displayPhysicalSize(bounds, d.scaleFactor),
+        physicalSize: displayPhysicalSize(bounds, scale),
       };
     });
   };
+  // Packaged app: use only Electron so each display's name, bounds and physicalSize come from the same display (avoids wrong monitor size when screenshot list order differs).
+  if (app.isPackaged) return electronDisplayList();
   try {
     const list = await Promise.race([
       screenshot.listDisplays(),
@@ -936,7 +965,7 @@ ipcMain.handle('get-displays', async () => {
     });
   } catch (err) {
     logError('get-displays failed (using Electron screen fallback):', (err as Error).message);
-    return fallback();
+    return electronDisplayList();
   }
 });
 

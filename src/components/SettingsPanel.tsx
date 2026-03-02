@@ -6,6 +6,7 @@ interface Display {
   index: number;
   name: string;
   bounds: { x: number; y: number; width: number; height: number };
+  physicalSize?: { width: number; height: number };
 }
 
 function formatBytes(bytes: number): string {
@@ -136,10 +137,22 @@ export default function SettingsPanel({ sessionFolder, frameCount, onClose, onOp
     return () => clearTimeout(t);
   }, []);
 
+  const settingsPanelRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     const unsub = window.timelapser.onRegionPicked((region) => {
       if (region) {
-        window.timelapser.getSettings().then(setSettings);
+        // Region pick must only update settings (no auto-start recording). Pre-fill output resolution from region size.
+        window.timelapser.getSettings().then((s) => {
+          const next = { ...s, region, width: region.width, height: region.height };
+          setSettings(next);
+          window.timelapser.setSettings(next as Parameters<typeof window.timelapser.setSettings>[0]);
+          setResolutionWidthStr(String(region.width));
+          setResolutionHeightStr(String(region.height));
+          resolutionJustSetByUs.current = 'width';
+          resolutionJustSetByUs.current = 'height';
+        });
+        settingsPanelRef.current?.focus();
       }
     });
     return unsub;
@@ -387,7 +400,7 @@ export default function SettingsPanel({ sessionFolder, frameCount, onClose, onOp
   }, [autoRunRecordingTest, testRunning]);
 
   return (
-    <div className={`settings-panel ${inline ? 'settings-panel--inline' : ''}`} style={inline ? undefined : panelPosition}>
+    <div ref={settingsPanelRef} tabIndex={-1} className={`settings-panel ${inline ? 'settings-panel--inline' : ''}`} style={inline ? undefined : panelPosition}>
       <div className="settings-panel__header">
         <h2 className="settings-panel__title">Settings</h2>
         <button type="button" className="settings-panel__close" onClick={onClose} aria-label="Close">
@@ -432,10 +445,11 @@ export default function SettingsPanel({ sessionFolder, frameCount, onClose, onOp
           <span>Capture interval (seconds)</span>
           <input
             type="number"
-            min={1}
+            min={0.1}
             max={3600}
+            step={0.1}
             value={Number(settings.intervalSeconds) || 5}
-            onChange={(e) => update('intervalSeconds', Math.max(1, parseInt(e.target.value, 10) || 5))}
+            onChange={(e) => update('intervalSeconds', Math.max(0.1, Math.min(3600, parseFloat(e.target.value) || 1)))}
           />
         </label>
 
@@ -481,7 +495,7 @@ export default function SettingsPanel({ sessionFolder, frameCount, onClose, onOp
             >
               {displays.map((d) => (
                 <option key={d.id} value={d.index}>
-                  {d.name} ({d.bounds.width}×{d.bounds.height})
+                  {d.name} ({d.physicalSize ? `${d.physicalSize.width}×${d.physicalSize.height}` : `${Math.round(d.bounds.width)}×${Math.round(d.bounds.height)}`})
                 </option>
               ))}
             </select>
