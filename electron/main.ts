@@ -89,6 +89,10 @@ interface CaptureSettings {
   overlayOpacity: number;
   /** When true, full logging (recording, overlay, etc.) is written to main.log. Default false = minimal only (startup/shutdown). */
   extendedLogging: boolean;
+  /** Last selected export format preset (e.g. youtube_standard). Default 16:9. */
+  lastExportPlatformId?: string;
+  /** Last export "crop to fit" option. Default false. */
+  lastExportCropToFit?: boolean;
 }
 
 const defaultSettings: CaptureSettings = {
@@ -211,16 +215,9 @@ function ensureOverlayWindow() {
   overlayWindow.setAlwaysOnTop(true, 'screen-saver');
   const opacity = Math.max(0.1, Math.min(1, getSettings().overlayOpacity ?? 1));
   overlayWindow.setOpacity(opacity);
-  overlayWindow.on('focus', () => {
-    if (!overlayWindow?.isDestroyed()) overlayWindow.setAlwaysOnTop(true, 'screen-saver');
-  });
+  // Do not re-apply always-on-top on every focus/blur so switching to another window does not pull the overlay back on top.
   overlayWindow.on('restore', () => {
     if (!overlayWindow?.isDestroyed()) overlayWindow.setAlwaysOnTop(true, 'screen-saver');
-  });
-  overlayWindow.on('blur', () => {
-    setImmediate(() => {
-      if (!overlayWindow?.isDestroyed()) overlayWindow.setAlwaysOnTop(true, 'screen-saver');
-    });
   });
   const isDev = !app.isPackaged && process.env.NODE_ENV !== 'production';
   if (isDev) {
@@ -660,8 +657,9 @@ function startNewSession(): string {
 function runCaptureLoop() {
   if (captureState !== 'recording' || !currentSessionFolder) return;
   const isFirstFrame = frameIndex === 0;
+  const intervalSec = Math.max(0.1, settings.intervalSeconds ?? 1);
   if (isFirstFrame) {
-    log('Capture loop: first frame scheduled', { intervalSeconds: settings.intervalSeconds });
+    log('Capture loop: first frame scheduled', { intervalSeconds: intervalSec });
   }
   captureFrame()
     .then(async (buf) => {
@@ -691,7 +689,8 @@ function runCaptureLoop() {
     })
     .finally(() => {
       if (captureState === 'recording') {
-        captureTimer = setTimeout(runCaptureLoop, settings.intervalSeconds * 1000);
+        const intervalSec = Math.max(0.1, settings.intervalSeconds ?? 1);
+        captureTimer = setTimeout(runCaptureLoop, intervalSec * 1000);
       }
     });
 }
@@ -895,15 +894,26 @@ ipcMain.on('set-overlay-height', (e, height: number) => {
 
 const GET_DISPLAYS_TIMEOUT_MS = 5000;
 
+function displayPhysicalSize(bounds: { width: number; height: number }, scaleFactor: number | undefined): { width: number; height: number } {
+  const s = scaleFactor ?? 1;
+  const w = Math.floor(bounds.width);
+  const h = Math.floor(bounds.height);
+  return { width: Math.floor(w * s), height: Math.floor(h * s) };
+}
+
 ipcMain.handle('get-displays', async () => {
   const fallback = () => {
     const displays = screen.getAllDisplays();
-    return displays.map((d, i) => ({
-      id: i,
-      index: i,
-      name: d.label || `Display ${i + 1}`,
-      bounds: d.bounds ?? d.workArea ?? { x: 0, y: 0, width: 1920, height: 1080 },
-    }));
+    return displays.map((d, i) => {
+      const bounds = d.bounds ?? d.workArea ?? { x: 0, y: 0, width: 1920, height: 1080 };
+      return {
+        id: i,
+        index: i,
+        name: d.label || `Display ${i + 1}`,
+        bounds,
+        physicalSize: displayPhysicalSize(bounds, d.scaleFactor),
+      };
+    });
   };
   try {
     const list = await Promise.race([
@@ -913,12 +923,17 @@ ipcMain.handle('get-displays', async () => {
       ),
     ]);
     const displays = screen.getAllDisplays();
-    return list.map((d, i) => ({
-      id: d.id,
-      index: i,
-      name: d.name || `Display ${i + 1}`,
-      bounds: displays[i]?.bounds ?? { x: 0, y: 0, width: 1920, height: 1080 },
-    }));
+    return list.map((d, i) => {
+      const disp = displays[i];
+      const bounds = disp?.bounds ?? { x: 0, y: 0, width: 1920, height: 1080 };
+      return {
+        id: d.id,
+        index: i,
+        name: d.name || `Display ${i + 1}`,
+        bounds,
+        physicalSize: displayPhysicalSize(bounds, disp?.scaleFactor),
+      };
+    });
   } catch (err) {
     logError('get-displays failed (using Electron screen fallback):', (err as Error).message);
     return fallback();
@@ -932,6 +947,7 @@ ipcMain.handle('set-continue-session', (_e, path: string | null) => {
 });
 ipcMain.handle('set-settings', (_e, s: Partial<CaptureSettings>) => {
   const next = { ...getSettings(), ...s };
+  if (typeof next.intervalSeconds === 'number' && next.intervalSeconds < 0.1) next.intervalSeconds = 0.1;
   saveSettings(next);
   if (overlayWindow && !overlayWindow.isDestroyed() && typeof next.overlayOpacity === 'number') {
     const opacity = Math.max(0.1, Math.min(1, next.overlayOpacity));
@@ -970,7 +986,9 @@ ipcMain.handle('get-main-log-contents', (_e, maxLines?: number) => {
 });
 
 ipcMain.handle('get-startup-flags', () => {
-  const runRecordingTest = process.env.RUN_RECORDING_TEST === '1';
+  const userData = app.getPath('userData');
+  const isTestUserData = userData.includes('.timelapser-test');
+  const runRecordingTest = process.env.RUN_RECORDING_TEST === '1' && isTestUserData;
   return { runRecordingTest };
 });
 

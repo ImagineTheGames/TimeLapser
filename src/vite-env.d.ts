@@ -3,7 +3,7 @@
 declare const __APP_VERSION__: string;
 
 interface TimeLapserAPI {
-  getDisplays: () => Promise<{ id: number; index: number; name: string; bounds: { x: number; y: number; width: number; height: number } }[]>;
+  getDisplays: () => Promise<{ id: number; index: number; name: string; bounds: { x: number; y: number; width: number; height: number }; physicalSize?: { width: number; height: number } }[]>;
   getSettings: () => Promise<CaptureSettings>;
   setSettings: (s: Partial<CaptureSettings>) => Promise<CaptureSettings>;
   getState: () => Promise<{ state: string; sessionFolder: string | null; frameCount: number; lastSessionFolder: string | null; continueTarget: string | null }>;
@@ -56,6 +56,10 @@ interface CaptureSettings {
   overlayOpacity: number;
   /** When true, full logging is written to main.log; when false, only startup/shutdown and errors. */
   extendedLogging: boolean;
+  /** Last selected export format preset (e.g. youtube_standard). Default 16:9. */
+  lastExportPlatformId?: string;
+  /** Last export "crop to fit" option. Default false. */
+  lastExportCropToFit?: boolean;
 }
 
 interface ExportVideoArgs {

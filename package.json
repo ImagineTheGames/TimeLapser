@@ -1,6 +1,6 @@
 {
   "name": "timelapser",
-  "version": "1.0.23",
+  "version": "1.0.24",
   "description": "Timelapse software - record monitor, window, or region with session management and social export",
   "main": "dist-electron/main.js",
   "author": "",

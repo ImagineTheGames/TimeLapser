@@ -22,10 +22,10 @@ export type Preset = {
 };
 
 export const SOCIAL_PRESETS: Preset[] = [
+  { id: 'youtube_standard', name: 'YouTube (16:9)', maxDurationSeconds: 0, width: 1920, height: 1080, aspectRatio: '16:9', fps: 30 },
   { id: 'instagram_reels', name: 'Instagram Reels', maxDurationSeconds: 90, width: 1080, height: 1920, aspectRatio: '9:16', fps: 30 },
   { id: 'instagram_stories', name: 'Instagram Stories', maxDurationSeconds: 60, width: 1080, height: 1920, aspectRatio: '9:16', fps: 30 },
   { id: 'youtube_shorts', name: 'YouTube Shorts', maxDurationSeconds: 60, width: 1080, height: 1920, aspectRatio: '9:16', fps: 30 },
-  { id: 'youtube_standard', name: 'YouTube (16:9)', maxDurationSeconds: 0, width: 1920, height: 1080, aspectRatio: '16:9', fps: 30 },
   { id: 'tiktok', name: 'TikTok', maxDurationSeconds: 180, width: 1080, height: 1920, aspectRatio: '9:16', fps: 30 },
   { id: 'facebook_reels', name: 'Facebook Reels', maxDurationSeconds: 90, width: 1080, height: 1920, aspectRatio: '9:16', fps: 30 },
   { id: 'facebook_stories', name: 'Facebook Stories', maxDurationSeconds: 60, width: 1440, height: 2560, aspectRatio: '9:16', fps: 30 },
@@ -67,10 +67,12 @@ const DEFAULT_CUSTOM_PRESET = { width: 1920, height: 1080, fps: 30, maxDurationS
 
 const DEFAULT_TARGET_OPTIONS = {
   speedToFit: true,
-  cropToFit: true,
+  cropToFit: false,
   quality: 70,
   maxFileSizeMb: null as number | null,
 };
+
+const DEFAULT_EXPORT_PLATFORM_ID = 'youtube_standard';
 
 export type GifMaxDimension = number | 'full';
 
@@ -252,12 +254,24 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
   const [firstFrameDataUrl, setFirstFrameDataUrl] = useState<string | null>(null);
   const [targets, setTargets] = useState<ExportTarget[]>([
     {
-      platformId: SOCIAL_PRESETS[0].id,
+      platformId: DEFAULT_EXPORT_PLATFORM_ID,
       outputPath: '',
       videoFormat: 'mp4',
       ...DEFAULT_TARGET_OPTIONS,
     },
   ]);
+
+  useEffect(() => {
+    window.timelapser.getSettings().then((s) => {
+      const savedId = s.lastExportPlatformId ?? DEFAULT_EXPORT_PLATFORM_ID;
+      const platformId = SOCIAL_PRESETS.some((p) => p.id === savedId) || savedId === CUSTOM_PRESET_ID || savedId === GIF_PRESET_ID || savedId === LINKEDIN_GIF_PRESET_ID ? savedId : DEFAULT_EXPORT_PLATFORM_ID;
+      const cropToFit = s.lastExportCropToFit ?? DEFAULT_TARGET_OPTIONS.cropToFit;
+      setTargets((prev) => {
+        if (prev.length === 0) return prev;
+        return [{ ...prev[0], platformId, cropToFit }, ...prev.slice(1)];
+      });
+    });
+  }, []);
 
   useEffect(() => {
     window.timelapser.getSessionList().then((list) => {
@@ -356,6 +370,11 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
     setTargets(targets.filter((_, idx) => idx !== i));
   };
   const updateTarget = (i: number, upd: Partial<ExportTarget>) => {
+    if (i === 0 && (upd.platformId != null || upd.cropToFit !== undefined)) {
+      const nextPlatform = upd.platformId ?? targets[0].platformId;
+      const nextCrop = upd.cropToFit !== undefined ? upd.cropToFit : (targets[0].cropToFit ?? DEFAULT_TARGET_OPTIONS.cropToFit);
+      window.timelapser.setSettings({ lastExportPlatformId: nextPlatform, lastExportCropToFit: nextCrop });
+    }
     setTargets(targets.map((t, idx) => {
       if (idx !== i) return t;
       const next = { ...t, ...upd };
