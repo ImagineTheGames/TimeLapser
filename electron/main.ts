@@ -91,8 +91,12 @@ interface CaptureSettings {
   extendedLogging: boolean;
   /** Last selected export format preset (e.g. youtube_standard). Default 16:9. */
   lastExportPlatformId?: string;
-  /** Last export "crop to fit" option. Default false. */
+  /** Last export "crop to fit" option. Default false. Kept for backward compat. */
   lastExportCropToFit?: boolean;
+  /** Last export fit mode: letterbox, crop, or stretch. Default stretch. */
+  lastExportFitMode?: 'letterbox' | 'crop' | 'stretch';
+  /** Screenshot resolution scale: 1 = 100%, 0.75 = 75%, 0.5 = 50%, 0.25 = 25%. Reduces disk usage. Default 0.5. */
+  captureResolutionScale?: number;
 }
 
 const defaultSettings: CaptureSettings = {
@@ -101,8 +105,9 @@ const defaultSettings: CaptureSettings = {
   source: 'monitor',
   monitorId: 0,
   region: null,
-  width: 1920,
-  height: 1080,
+  width: 0,
+  height: 0,
+  captureResolutionScale: 0.5,
   format: 'jpeg',
   jpegQuality: 85,
   optimizeFileSize: true,
@@ -596,8 +601,12 @@ async function captureFrame(): Promise<Buffer> {
       }
     }
     let pipeline = sharp(buf);
-    if (settings.width > 0 && settings.height > 0) {
-      pipeline = pipeline.resize(settings.width, settings.height, { fit: 'inside' });
+    const scale = settings.captureResolutionScale ?? 0.5;
+    if (scale < 1) {
+      const meta = await sharp(buf).metadata();
+      const w = meta.width ?? 1920;
+      const h = meta.height ?? 1080;
+      pipeline = pipeline.resize(Math.max(1, Math.round(w * scale)), Math.max(1, Math.round(h * scale)), { fit: 'inside' });
     }
     if (settings.format === 'jpeg') {
       pipeline = pipeline.jpeg({
@@ -615,8 +624,12 @@ async function captureFrame(): Promise<Buffer> {
   opts.format = settings.format === 'jpeg' ? 'jpg' : 'png';
   let buf = await screenshot(opts);
   let pipeline = sharp(buf);
-  if (settings.width > 0 && settings.height > 0) {
-    pipeline = pipeline.resize(settings.width, settings.height, { fit: 'inside' });
+  const scale = settings.captureResolutionScale ?? 0.5;
+  if (scale < 1) {
+    const meta = await sharp(buf).metadata();
+    const w = meta.width ?? 1920;
+    const h = meta.height ?? 1080;
+    pipeline = pipeline.resize(Math.max(1, Math.round(w * scale)), Math.max(1, Math.round(h * scale)), { fit: 'inside' });
   }
   if (settings.format === 'jpeg') {
     pipeline = pipeline.jpeg({
@@ -650,6 +663,7 @@ function startNewSession(): string {
     source: settings.source,
     width: settings.width,
     height: settings.height,
+    resolutionScale: settings.captureResolutionScale ?? 0.5,
     format: settings.format,
   };
   fs.writeFileSync(path.join(sessionPath, 'metadata.json'), JSON.stringify(meta, null, 2));
@@ -1169,7 +1183,7 @@ ipcMain.handle('get-default-export-path', (_e, sessionFolder: string) => {
   return path.join(s.outputFolder, name);
 });
 
-ipcMain.handle('get-first-frame-data-url', (_e, sessionFolder: string) => {
+ipcMain.handle('get-first-frame-data-url', async (_e, sessionFolder: string) => {
   try {
     const files = fs.readdirSync(sessionFolder)
       .filter((f) => /^frame_\d+\.(png|jpg|jpeg)$/i.test(f))
@@ -1178,15 +1192,26 @@ ipcMain.handle('get-first-frame-data-url', (_e, sessionFolder: string) => {
         const nb = parseInt(b.replace(/\D/g, ''), 10);
         return na - nb;
       });
-    if (files.length === 0) return { dataUrl: null };
+    if (files.length === 0) return { dataUrl: null, width: undefined, height: undefined };
     const firstPath = path.join(sessionFolder, files[0]);
     const buf = fs.readFileSync(firstPath);
     const ext = path.extname(firstPath).toLowerCase();
     const mime = ext === '.png' ? 'image/png' : 'image/jpeg';
     const dataUrl = `data:${mime};base64,${buf.toString('base64')}`;
-    return { dataUrl };
+    let width: number | undefined;
+    let height: number | undefined;
+    try {
+      const meta = await sharp(buf).metadata();
+      if (typeof meta.width === 'number' && typeof meta.height === 'number') {
+        width = meta.width;
+        height = meta.height;
+      }
+    } catch {
+      // ignore
+    }
+    return { dataUrl, width, height };
   } catch {
-    return { dataUrl: null };
+    return { dataUrl: null, width: undefined, height: undefined };
   }
 });
 
@@ -1263,6 +1288,11 @@ ipcMain.handle('export-video', async (_e, args: {
   width: number;
   height: number;
   cropToFit?: boolean;
+  /** How to fit source into output: letterbox (pad), crop (cover), stretch (fill). Takes precedence over cropToFit when set. */
+  fitMode?: 'letterbox' | 'crop' | 'stretch';
+  /** Crop position when fitMode is crop: 0 = left/top, 0.5 = center, 1 = right/bottom. Default 0.5. */
+  cropOffsetX?: number;
+  cropOffsetY?: number;
   maxFileSizeBytes?: number;
   audioPath?: string | null;
   fadeInSeconds?: number;
@@ -1277,6 +1307,9 @@ ipcMain.handle('export-video', async (_e, args: {
   const {
     sessionFolder, outputPath, maxDurationSeconds, fps, width, height,
     cropToFit = false,
+    fitMode,
+    cropOffsetX = 0.5,
+    cropOffsetY = 0.5,
     maxFileSizeBytes,
     quality = 70,
     audioPath = null, fadeInSeconds = 0, fadeOutSeconds = 0,
@@ -1317,6 +1350,18 @@ ipcMain.handle('export-video', async (_e, args: {
   if (firstFrameSize === 0) {
     logError('export-video: first frame is 0 bytes, refusing to export');
     return { ok: false, message: 'First frame file is empty (0 bytes). The recording did not capture correctly – try a different capture source or reinstall the app.' };
+  }
+  let srcW = 0;
+  let srcH = 0;
+  try {
+    const buf = fs.readFileSync(firstFramePath);
+    const meta = await sharp(buf).metadata();
+    if (typeof meta.width === 'number' && typeof meta.height === 'number') {
+      srcW = meta.width;
+      srcH = meta.height;
+    }
+  } catch {
+    // ignore; crop will use center when srcW/srcH are 0
   }
   let ffmpegPath: string | null = null;
   try {
@@ -1440,7 +1485,26 @@ ipcMain.handle('export-video', async (_e, args: {
       }
       // Only apply fps when not skipping (when skipping, setpts already defines timing; fps would risk dropping frames)
       if (frameStep <= 1) vfParts.push(`fps=${outFps}`);
-      vfParts.push(`scale=${outW}:${outH}:flags=lanczos`);
+      const gifFitMode = fitMode ?? (cropToFit ? 'crop' : 'letterbox');
+      if (gifFitMode === 'stretch') {
+        vfParts.push(`scale=${outW}:${outH}:flags=lanczos`);
+      } else if (gifFitMode === 'crop') {
+        vfParts.push(`scale=${outW}:${outH}:force_original_aspect_ratio=increase`);
+        if (srcW > 0 && srcH > 0) {
+          const scale = Math.max(outW / srcW, outH / srcH);
+          const scaleW = Math.round(srcW * scale);
+          const scaleH = Math.round(srcH * scale);
+          let cropX = Math.round((scaleW - outW) * cropOffsetX);
+          let cropY = Math.round((scaleH - outH) * cropOffsetY);
+          cropX = Math.max(0, Math.min(scaleW - outW, cropX));
+          cropY = Math.max(0, Math.min(scaleH - outH, cropY));
+          vfParts.push(`crop=${outW}:${outH}:${cropX}:${cropY}`);
+        } else {
+          vfParts.push(`crop=${outW}:${outH}`);
+        }
+      } else {
+        vfParts.push(`scale=${outW}:${outH}:force_original_aspect_ratio=decrease`, `pad=${outW}:${outH}:(ow-iw)/2:(oh-ih)/2`);
+      }
       if (holdLastSec > 0) {
         vfParts.push(`tpad=stop_mode=clone:stop_duration=${holdLastSec}`);
       }
@@ -1524,8 +1588,23 @@ ipcMain.handle('export-video', async (_e, args: {
       if (frameStep > 1) {
         vfParts.push(`select='not(mod(n\\,${frameStep}))'`, `setpts=N/(${fps}*${frameStep})/TB`);
       }
-      if (cropToFit) {
-        vfParts.push(`scale=${width}:${height}:force_original_aspect_ratio=increase`, `crop=${width}:${height}`);
+      const mode = fitMode ?? (cropToFit ? 'crop' : 'letterbox');
+      if (mode === 'stretch') {
+        vfParts.push(`scale=${width}:${height}`);
+      } else if (mode === 'crop') {
+        vfParts.push(`scale=${width}:${height}:force_original_aspect_ratio=increase`);
+        if (srcW > 0 && srcH > 0) {
+          const scale = Math.max(width / srcW, height / srcH);
+          const scaleW = Math.round(srcW * scale);
+          const scaleH = Math.round(srcH * scale);
+          let cropX = Math.round((scaleW - width) * cropOffsetX);
+          let cropY = Math.round((scaleH - height) * cropOffsetY);
+          cropX = Math.max(0, Math.min(scaleW - width, cropX));
+          cropY = Math.max(0, Math.min(scaleH - height, cropY));
+          vfParts.push(`crop=${width}:${height}:${cropX}:${cropY}`);
+        } else {
+          vfParts.push(`crop=${width}:${height}`);
+        }
       } else {
         vfParts.push(`scale=${width}:${height}:force_original_aspect_ratio=decrease`, `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2`);
       }

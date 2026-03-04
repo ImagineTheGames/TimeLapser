@@ -120,9 +120,6 @@ export default function SettingsPanel({ sessionFolder, frameCount, onClose, onOp
   const [sessionList, setSessionList] = useState<{ path: string; name: string }[]>([]);
   const [continueSessionPath, setContinueSessionPathState] = useState<string | null>(null);
   const [panelPosition, setPanelPosition] = useState<{ top?: number; right?: number; bottom?: number; left?: number }>({ top: BAR_HEIGHT, right: 12 });
-  const [resolutionWidthStr, setResolutionWidthStr] = useState('');
-  const [resolutionHeightStr, setResolutionHeightStr] = useState('');
-  const resolutionJustSetByUs = useRef<'width' | 'height' | null>(null);
   const [testRunning, setTestRunning] = useState(false);
   const [testLogLines, setTestLogLines] = useState<string[]>([]);
   const autoRunDone = useRef(false);
@@ -142,15 +139,10 @@ export default function SettingsPanel({ sessionFolder, frameCount, onClose, onOp
   useEffect(() => {
     const unsub = window.timelapser.onRegionPicked((region) => {
       if (region) {
-        // Region pick must only update settings (no auto-start recording). Pre-fill output resolution from region size.
         window.timelapser.getSettings().then((s) => {
-          const next = { ...s, region, width: region.width, height: region.height };
+          const next = { ...s, region };
           setSettings(next);
           window.timelapser.setSettings(next as Parameters<typeof window.timelapser.setSettings>[0]);
-          setResolutionWidthStr(String(region.width));
-          setResolutionHeightStr(String(region.height));
-          resolutionJustSetByUs.current = 'width';
-          resolutionJustSetByUs.current = 'height';
         });
         settingsPanelRef.current?.focus();
       }
@@ -186,21 +178,6 @@ export default function SettingsPanel({ sessionFolder, frameCount, onClose, onOp
     const t = setInterval(load, 1500);
     return () => clearInterval(t);
   }, [sessionFolder]);
-
-  useEffect(() => {
-    const w = settings.width;
-    const h = settings.height;
-    if (resolutionJustSetByUs.current === 'width') {
-      resolutionJustSetByUs.current = null;
-    } else if (w !== undefined && w !== null) {
-      setResolutionWidthStr(String(w));
-    }
-    if (resolutionJustSetByUs.current === 'height') {
-      resolutionJustSetByUs.current = null;
-    } else if (h !== undefined && h !== null) {
-      setResolutionHeightStr(String(h));
-    }
-  }, [settings.width, settings.height]);
 
   const update = (key: string, value: unknown) => {
     const next = { ...settings, [key]: value };
@@ -525,38 +502,18 @@ export default function SettingsPanel({ sessionFolder, frameCount, onClose, onOp
         )}
 
         <label className="settings-panel__row">
-          <span>Output resolution (width × height)</span>
-          <div className="settings-panel__res">
-            <input
-              type="number"
-              min={0}
-              placeholder="1920"
-              value={resolutionWidthStr}
-              onChange={(e) => {
-                const raw = e.target.value;
-                setResolutionWidthStr(raw);
-                const n = parseInt(raw, 10);
-                resolutionJustSetByUs.current = 'width';
-                update('width', Number.isNaN(n) ? 0 : n);
-              }}
-            />
-            <span>×</span>
-            <input
-              type="number"
-              min={0}
-              placeholder="1080"
-              value={resolutionHeightStr}
-              onChange={(e) => {
-                const raw = e.target.value;
-                setResolutionHeightStr(raw);
-                const n = parseInt(raw, 10);
-                resolutionJustSetByUs.current = 'height';
-                update('height', Number.isNaN(n) ? 0 : n);
-              }}
-            />
-          </div>
+          <span>Screenshot resolution</span>
+          <select
+            value={String(settings.captureResolutionScale ?? 0.5)}
+            onChange={(e) => update('captureResolutionScale', parseFloat(e.target.value))}
+          >
+            <option value={1}>100%</option>
+            <option value={0.75}>75%</option>
+            <option value={0.5}>50%</option>
+            <option value={0.25}>25%</option>
+          </select>
+          <p className="settings-panel__hint">Reduce disk usage by using smaller sizes.</p>
         </label>
-        <p className="settings-panel__hint">Use 0×0 to keep original size.</p>
 
         <label className="settings-panel__row">
           <span>Image format</span>

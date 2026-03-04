@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import './ExportDialog.css';
 
 const ENCODING_BY_FORMAT: Record<string, string> = { mp4: 'H.264', mov: 'H.264', webm: 'VP9' };
@@ -65,9 +65,12 @@ function getGifDimensions(maxDim: GifMaxDimension, aspectRatio: '9:16' | '16:9')
 
 const DEFAULT_CUSTOM_PRESET = { width: 1920, height: 1080, fps: 30, maxDurationSeconds: 0 };
 
+export type FitMode = 'letterbox' | 'crop' | 'stretch';
+
 const DEFAULT_TARGET_OPTIONS = {
   speedToFit: true,
   cropToFit: false,
+  fitMode: 'stretch' as FitMode,
   quality: 70,
   maxFileSizeMb: null as number | null,
 };
@@ -94,6 +97,13 @@ export interface ExportTarget {
   targetDurationSeconds?: number | null;
   speedToFit?: boolean;
   cropToFit?: boolean;
+  /** How to fit source into output: letterbox (pad), crop (cover), stretch (fill). Default stretch. */
+  fitMode?: FitMode;
+  /** Custom preset only: when true, output size = recording size (no aspect change). */
+  matchRecordingSize?: boolean;
+  /** When fitMode is crop: position of crop window 0–1 (0=left/top, 0.5=center, 1=right/bottom). Default 0.5. */
+  cropOffsetX?: number;
+  cropOffsetY?: number;
   quality?: number;
   maxFileSizeMb?: number | null;
   /** Hold last frame: number of additional frames to duplicate at the end. 0 = off. */
@@ -104,10 +114,123 @@ export interface ExportTarget {
   gifSimpleSliders?: boolean;
 }
 
-function getPresetForTarget(t: ExportTarget): Preset {
+/** Crop position preview: full image with draggable export frame (9:16 or 16:9). Used when fitMode is crop. */
+function CropPositionPreview({
+  firstFrameDataUrl,
+  recordingDimensions,
+  outWidth,
+  outHeight,
+  cropOffsetX = 0.5,
+  cropOffsetY = 0.5,
+  onOffsetChange,
+}: {
+  firstFrameDataUrl: string;
+  recordingDimensions: { width: number; height: number };
+  outWidth: number;
+  outHeight: number;
+  cropOffsetX?: number;
+  cropOffsetY?: number;
+  onOffsetChange: (cropOffsetX: number, cropOffsetY: number) => void;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [dragging, setDragging] = useState(false);
+  const startRef = useRef<{ clientX: number; clientY: number; offsetX: number; offsetY: number } | null>(null);
+
+  const srcW = recordingDimensions.width;
+  const srcH = recordingDimensions.height;
+  const scale = Math.max(outWidth / srcW, outHeight / srcH);
+  const scaleW = srcW * scale;
+  const scaleH = srcH * scale;
+  const cropX = (scaleW - outWidth) * cropOffsetX;
+  const cropY = (scaleH - outHeight) * cropOffsetY;
+  const leftPct = scaleW > 0 ? (cropX / scaleW) * 100 : 0;
+  const topPct = scaleH > 0 ? (cropY / scaleH) * 100 : 0;
+  const widthPct = scaleW > 0 ? (outWidth / scaleW) * 100 : 100;
+  const heightPct = scaleH > 0 ? (outHeight / scaleH) * 100 : 100;
+
+  const maxLeftPct = Math.max(0, 100 - widthPct);
+  const maxTopPct = Math.max(0, 100 - heightPct);
+
+  const handleMouseDown = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      setDragging(true);
+      startRef.current = { clientX: e.clientX, clientY: e.clientY, offsetX: cropOffsetX, offsetY: cropOffsetY };
+    },
+    [cropOffsetX, cropOffsetY]
+  );
+
+  useEffect(() => {
+    if (!dragging) return;
+    const onMove = (e: MouseEvent) => {
+      const start = startRef.current;
+      const el = containerRef.current;
+      if (!start || !el) return;
+      const rect = el.getBoundingClientRect();
+      const deltaPctX = ((e.clientX - start.clientX) / rect.width) * 100;
+      const deltaPctY = ((e.clientY - start.clientY) / rect.height) * 100;
+      let newLeftPct = (start.offsetX * maxLeftPct) + deltaPctX;
+      let newTopPct = (start.offsetY * maxTopPct) + deltaPctY;
+      newLeftPct = Math.max(0, Math.min(maxLeftPct, newLeftPct));
+      newTopPct = Math.max(0, Math.min(maxTopPct, newTopPct));
+      const newOffsetX = maxLeftPct > 0 ? newLeftPct / maxLeftPct : 0.5;
+      const newOffsetY = maxTopPct > 0 ? newTopPct / maxTopPct : 0.5;
+      onOffsetChange(newOffsetX, newOffsetY);
+    };
+    const onUp = () => {
+      setDragging(false);
+      startRef.current = null;
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, [dragging, maxLeftPct, maxTopPct, onOffsetChange]);
+
+  return (
+    <div className="export-dialog__crop-position">
+      <p className="export-dialog__fit-mode-label">Drag the frame to choose which part is exported.</p>
+      <div
+        ref={containerRef}
+        className="export-dialog__crop-position-preview"
+        style={{ aspectRatio: `${srcW} / ${srcH}` }}
+      >
+        <img
+          src={firstFrameDataUrl}
+          alt="Recording"
+          className="export-dialog__crop-position-img"
+          style={{ objectFit: 'contain' }}
+        />
+        <div
+          role="presentation"
+          className="export-dialog__crop-position-frame"
+          style={{
+            left: `${leftPct}%`,
+            top: `${topPct}%`,
+            width: `${widthPct}%`,
+            height: `${heightPct}%`,
+            cursor: dragging ? 'grabbing' : 'grab',
+          }}
+          onMouseDown={handleMouseDown}
+        />
+      </div>
+    </div>
+  );
+}
+
+function getPresetForTarget(t: ExportTarget, recordingDimensions?: { width: number; height: number } | null): Preset {
   if (t.platformId === CUSTOM_PRESET_ID && t.customPreset) {
-    const { width, height, fps, maxDurationSeconds } = t.customPreset;
-    const aspectRatio = width >= height ? '16:9' : '9:16';
+    const useRecording = t.matchRecordingSize && recordingDimensions && recordingDimensions.width > 0 && recordingDimensions.height > 0;
+    const width = useRecording ? recordingDimensions.width : t.customPreset.width;
+    const height = useRecording ? recordingDimensions.height : t.customPreset.height;
+    const fps = t.customPreset.fps;
+    const maxDurationSeconds = t.customPreset.maxDurationSeconds;
+    const ratio = width / height;
+    const aspectRatio = Math.abs(ratio - 21 / 9) < 0.01 ? (width >= height ? '21:9' : '9:21')
+      : Math.abs(ratio - 16 / 9) < 0.01 ? (width >= height ? '16:9' : '9:16')
+      : `${width}:${height}`;
     return { id: CUSTOM_PRESET_ID, name: 'Custom', maxDurationSeconds, width, height, aspectRatio, fps };
   }
   if (t.platformId === GIF_PRESET_ID) {
@@ -127,12 +250,12 @@ function getFormatForTarget(t: ExportTarget): 'mp4' | 'webm' | 'mov' | 'gif' {
   return (t.platformId === GIF_PRESET_ID || t.platformId === LINKEDIN_GIF_PRESET_ID) ? 'gif' : (t.videoFormat ?? 'mp4');
 }
 
-function getEffectiveFpsForTarget(t: ExportTarget, frameCount: number): number {
+function getEffectiveFpsForTarget(t: ExportTarget, frameCount: number, recordingDimensions?: { width: number; height: number } | null): number {
   if (frameCount <= 0) return 30;
   if (t.targetDurationSeconds != null && t.targetDurationSeconds > 0) {
     return Math.max(1, frameCount / t.targetDurationSeconds);
   }
-  const preset = getPresetForTarget(t);
+  const preset = getPresetForTarget(t, recordingDimensions);
   const speedToFit = t.speedToFit ?? DEFAULT_TARGET_OPTIONS.speedToFit;
   if (speedToFit && preset.maxDurationSeconds > 0) {
     return Math.max(1, frameCount / preset.maxDurationSeconds);
@@ -140,24 +263,24 @@ function getEffectiveFpsForTarget(t: ExportTarget, frameCount: number): number {
   return t.fpsOverride ?? preset.fps;
 }
 
-function getDurationSecForTarget(t: ExportTarget, frameCount: number): number {
+function getDurationSecForTarget(t: ExportTarget, frameCount: number, recordingDimensions?: { width: number; height: number } | null): number {
   if (frameCount <= 0) return 0;
   if (getFormatForTarget(t) === 'gif') {
-    const out = computeGifOutput(t, frameCount);
+    const out = computeGifOutput(t, frameCount, recordingDimensions);
     return out ? out.durationSec : 0;
   }
-  return frameCount / getEffectiveFpsForTarget(t, frameCount);
+  return frameCount / getEffectiveFpsForTarget(t, frameCount, recordingDimensions);
 }
 
-function getEstimatedFileSizeMbForTarget(t: ExportTarget, frameCount: number): number | null {
+function getEstimatedFileSizeMbForTarget(t: ExportTarget, frameCount: number, recordingDimensions?: { width: number; height: number } | null): number | null {
   if (frameCount <= 0) return null;
   const format = getFormatForTarget(t);
   if (format === 'gif') {
-    const out = computeGifOutput(t, frameCount);
+    const out = computeGifOutput(t, frameCount, recordingDimensions);
     return out ? out.estimatedSizeMb : null;
   }
-  const durationSec = getDurationSecForTarget(t, frameCount);
-  const preset = getPresetForTarget(t);
+  const durationSec = getDurationSecForTarget(t, frameCount, recordingDimensions);
+  const preset = getPresetForTarget(t, recordingDimensions);
   const quality = t.quality ?? DEFAULT_TARGET_OPTIONS.quality;
   const maxFileSizeMb = t.maxFileSizeMb ?? DEFAULT_TARGET_OPTIONS.maxFileSizeMb;
   const pixels = preset.width * preset.height;
@@ -173,10 +296,11 @@ function getEstimatedFileSizeMbForTarget(t: ExportTarget, frameCount: number): n
 /** Mirrors backend GIF logic so we can show accurate live preview (frames, FPS, resolution, duration, size). */
 export function computeGifOutput(
   t: ExportTarget,
-  frameCount: number
+  frameCount: number,
+  recordingDimensions?: { width: number; height: number } | null
 ): { numFrames: number; outFps: number; outW: number; outH: number; durationSec: number; estimatedSizeBytes: number; estimatedSizeMb: number } | null {
   if (frameCount <= 0) return null;
-  const preset = getPresetForTarget(t);
+  const preset = getPresetForTarget(t, recordingDimensions);
   let gifWidth = preset.width;
   let gifHeight = preset.height;
   const gifQuality = t.gifQuality ?? 70;
@@ -252,6 +376,7 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
   const [message, setMessage] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [frameCount, setFrameCount] = useState(0);
   const [firstFrameDataUrl, setFirstFrameDataUrl] = useState<string | null>(null);
+  const [recordingDimensions, setRecordingDimensions] = useState<{ width: number; height: number } | null>(null);
   const [targets, setTargets] = useState<ExportTarget[]>([
     {
       platformId: DEFAULT_EXPORT_PLATFORM_ID,
@@ -265,10 +390,10 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
     window.timelapser.getSettings().then((s) => {
       const savedId = s.lastExportPlatformId ?? DEFAULT_EXPORT_PLATFORM_ID;
       const platformId = SOCIAL_PRESETS.some((p) => p.id === savedId) || savedId === CUSTOM_PRESET_ID || savedId === GIF_PRESET_ID || savedId === LINKEDIN_GIF_PRESET_ID ? savedId : DEFAULT_EXPORT_PLATFORM_ID;
-      const cropToFit = s.lastExportCropToFit ?? DEFAULT_TARGET_OPTIONS.cropToFit;
+      const fitMode = s.lastExportFitMode ?? (s.lastExportCropToFit === true ? 'crop' as const : s.lastExportCropToFit === false ? 'letterbox' as const : DEFAULT_TARGET_OPTIONS.fitMode);
       setTargets((prev) => {
         if (prev.length === 0) return prev;
-        return [{ ...prev[0], platformId, cropToFit }, ...prev.slice(1)];
+        return [{ ...prev[0], platformId, fitMode, cropToFit: fitMode === 'crop' }, ...prev.slice(1)];
       });
     });
   }, []);
@@ -327,7 +452,11 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
       fpsOverride: last?.fpsOverride,
       targetDurationSeconds: last?.targetDurationSeconds ?? undefined,
       speedToFit: last?.speedToFit ?? DEFAULT_TARGET_OPTIONS.speedToFit,
-      cropToFit: last?.cropToFit ?? DEFAULT_TARGET_OPTIONS.cropToFit,
+      fitMode: last?.fitMode ?? DEFAULT_TARGET_OPTIONS.fitMode,
+      cropToFit: (last?.fitMode ?? DEFAULT_TARGET_OPTIONS.fitMode) === 'crop',
+      matchRecordingSize: last?.matchRecordingSize ?? false,
+      cropOffsetX: last?.cropOffsetX,
+      cropOffsetY: last?.cropOffsetY,
       quality: last?.quality ?? DEFAULT_TARGET_OPTIONS.quality,
       maxFileSizeMb: last?.maxFileSizeMb ?? DEFAULT_TARGET_OPTIONS.maxFileSizeMb,
       duplicateLastFrameCount: last?.duplicateLastFrameCount ?? 0,
@@ -356,7 +485,11 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
         fpsOverride: prev.fpsOverride,
         targetDurationSeconds: prev.targetDurationSeconds ?? undefined,
         speedToFit: prev.speedToFit ?? DEFAULT_TARGET_OPTIONS.speedToFit,
-        cropToFit: prev.cropToFit ?? DEFAULT_TARGET_OPTIONS.cropToFit,
+        fitMode: prev.fitMode ?? DEFAULT_TARGET_OPTIONS.fitMode,
+        cropToFit: (prev.fitMode ?? DEFAULT_TARGET_OPTIONS.fitMode) === 'crop',
+        matchRecordingSize: prev.matchRecordingSize ?? false,
+        cropOffsetX: prev.cropOffsetX,
+        cropOffsetY: prev.cropOffsetY,
         quality: prev.quality ?? DEFAULT_TARGET_OPTIONS.quality,
         maxFileSizeMb: prev.maxFileSizeMb ?? DEFAULT_TARGET_OPTIONS.maxFileSizeMb,
         duplicateLastFrameCount: prev.duplicateLastFrameCount ?? 0,
@@ -370,10 +503,10 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
     setTargets(targets.filter((_, idx) => idx !== i));
   };
   const updateTarget = (i: number, upd: Partial<ExportTarget>) => {
-    if (i === 0 && (upd.platformId != null || upd.cropToFit !== undefined)) {
+    if (i === 0 && (upd.platformId != null || upd.fitMode !== undefined || upd.cropToFit !== undefined)) {
       const nextPlatform = upd.platformId ?? targets[0].platformId;
-      const nextCrop = upd.cropToFit !== undefined ? upd.cropToFit : (targets[0].cropToFit ?? DEFAULT_TARGET_OPTIONS.cropToFit);
-      window.timelapser.setSettings({ lastExportPlatformId: nextPlatform, lastExportCropToFit: nextCrop });
+      const nextFitMode = upd.fitMode ?? (upd.cropToFit === true ? 'crop' : upd.cropToFit === false ? 'letterbox' : (targets[0].fitMode ?? DEFAULT_TARGET_OPTIONS.fitMode));
+      window.timelapser.setSettings({ lastExportPlatformId: nextPlatform, lastExportFitMode: nextFitMode, lastExportCropToFit: nextFitMode === 'crop' });
     }
     setTargets(targets.map((t, idx) => {
       if (idx !== i) return t;
@@ -419,7 +552,10 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
 
   useEffect(() => {
     if (!selectedSessionFolder) return;
-    window.timelapser.getFirstFrameDataUrl(selectedSessionFolder).then(({ dataUrl }) => setFirstFrameDataUrl(dataUrl));
+    window.timelapser.getFirstFrameDataUrl(selectedSessionFolder).then(({ dataUrl, width, height }) => {
+      setFirstFrameDataUrl(dataUrl);
+      setRecordingDimensions(width != null && height != null ? { width, height } : null);
+    });
   }, [selectedSessionFolder]);
 
   const pickMusic = async () => {
@@ -453,10 +589,10 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
       const ext = format;
       const basePath = t.outputPath.replace(/\.(mp4|webm|mov|gif)$/i, '');
       const finalPath = t.outputPath.toLowerCase().endsWith(`.${ext}`) ? t.outputPath : `${basePath}.${ext}`;
-      const p = getPresetForTarget(t);
-      const effFps = getEffectiveFpsForTarget(t, frameCount);
+      const p = getPresetForTarget(t, recordingDimensions);
+      const effFps = getEffectiveFpsForTarget(t, frameCount, recordingDimensions);
       const speedToFit = t.speedToFit ?? DEFAULT_TARGET_OPTIONS.speedToFit;
-      const cropToFit = t.cropToFit ?? DEFAULT_TARGET_OPTIONS.cropToFit;
+      const fitMode = t.fitMode ?? DEFAULT_TARGET_OPTIONS.fitMode;
       const quality = t.quality ?? DEFAULT_TARGET_OPTIONS.quality;
       const maxFileSizeMb = t.maxFileSizeMb ?? DEFAULT_TARGET_OPTIONS.maxFileSizeMb;
       const result = await window.timelapser.exportVideo({
@@ -468,7 +604,10 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
         fps: effFps,
         width: p.width,
         height: p.height,
-        cropToFit,
+        fitMode,
+        cropToFit: fitMode === 'crop',
+        cropOffsetX: t.cropOffsetX ?? 0.5,
+        cropOffsetY: t.cropOffsetY ?? 0.5,
         maxFileSizeBytes: maxFileSizeMb != null && maxFileSizeMb > 0 ? Math.round(maxFileSizeMb * 1024 * 1024) : undefined,
         quality: format === 'gif' ? (t.gifQuality ?? 70) : quality,
         audioPath: format === 'gif' ? null : (audioPath || null),
@@ -619,13 +758,16 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
           <div className="export-dialog__row">
             <span>Export to</span>
             {targets.map((t, i) => {
-              const p = getPresetForTarget(t);
-              const durationSec = getDurationSecForTarget(t, frameCount);
-              const estimatedMb = getEstimatedFileSizeMbForTarget(t, frameCount);
+              const p = getPresetForTarget(t, recordingDimensions);
+              const durationSec = getDurationSecForTarget(t, frameCount, recordingDimensions);
+              const estimatedMb = getEstimatedFileSizeMbForTarget(t, frameCount, recordingDimensions);
               const displayFps = t.fpsOverride ?? p.fps;
               const isGif = t.platformId === GIF_PRESET_ID;
               const isLinkedInGif = t.platformId === LINKEDIN_GIF_PRESET_ID;
               const isGifOrLinkedInGif = isGif || isLinkedInGif;
+              const fitMode = t.fitMode ?? DEFAULT_TARGET_OPTIONS.fitMode;
+              const previewObjectFit = fitMode === 'crop' ? 'cover' : fitMode === 'stretch' ? 'fill' : 'contain';
+              const previewTitle = fitMode === 'crop' ? 'Crop to fit' : fitMode === 'stretch' ? 'Stretch' : 'Letterbox';
               return (
                 <div key={i} className="export-dialog__target-card">
                   <div className="export-dialog__target-card-header">
@@ -657,19 +799,47 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
                   <div
                     className={`export-dialog__preview export-dialog__target-preview ${firstFrameDataUrl ? 'export-dialog__preview--with-image' : ''}`}
                     style={{ aspectRatio: p.aspectRatio.replace(':', '/'), maxWidth: '100%', maxHeight: 140, minHeight: 80 }}
-                    title={`Preview: ${t.cropToFit ?? DEFAULT_TARGET_OPTIONS.cropToFit ? 'Crop to fit' : 'Letterbox'} · ${p.aspectRatio}`}
+                    title={`Preview: ${previewTitle} · ${p.aspectRatio}`}
                   >
                     {firstFrameDataUrl ? (
                       <img
                         src={firstFrameDataUrl}
                         alt="Export preview"
                         className="export-dialog__preview-img"
-                        style={{ objectFit: (t.cropToFit ?? DEFAULT_TARGET_OPTIONS.cropToFit) ? 'cover' : 'contain' }}
+                        style={{ objectFit: previewObjectFit }}
                       />
                     ) : null}
                     <span className="export-dialog__preview-label">{p.aspectRatio}</span>
                     <span className="export-dialog__preview-size">{p.width}×{p.height}</span>
                   </div>
+                  <div className="export-dialog__fit-mode export-dialog__row">
+                    <span className="export-dialog__fit-mode-label">Fit image</span>
+                    <div className="export-dialog__fit-mode-options" role="group" aria-label="Fit image">
+                      {(['letterbox', 'crop', 'stretch'] as const).map((mode) => (
+                        <label key={mode} className="export-dialog__fit-mode-option">
+                          <input
+                            type="radio"
+                            name={`fit-${i}`}
+                            checked={fitMode === mode}
+                            onChange={() => updateTarget(i, { fitMode: mode, cropToFit: mode === 'crop' })}
+                          />
+                          <span>{mode === 'letterbox' ? 'Letterbox' : mode === 'crop' ? 'Crop to fit' : 'Stretch'}</span>
+                        </label>
+                      ))}
+                    </div>
+                    <p className="export-dialog__hint export-dialog__hint-inline">Letterbox = pad to fit. Crop = fill and trim. Stretch = fill exact size (may distort).</p>
+                  </div>
+                  {fitMode === 'crop' && (p.aspectRatio === '9:16' || p.aspectRatio === '16:9') && firstFrameDataUrl && recordingDimensions && recordingDimensions.width > 0 && recordingDimensions.height > 0 && (
+                    <CropPositionPreview
+                      firstFrameDataUrl={firstFrameDataUrl}
+                      recordingDimensions={recordingDimensions}
+                      outWidth={p.width}
+                      outHeight={p.height}
+                      cropOffsetX={t.cropOffsetX ?? 0.5}
+                      cropOffsetY={t.cropOffsetY ?? 0.5}
+                      onOffsetChange={(cropOffsetX, cropOffsetY) => updateTarget(i, { cropOffsetX, cropOffsetY })}
+                    />
+                  )}
                   {!isGifOrLinkedInGif && (
                     <label className="export-dialog__row">
                       <span>Video format</span>
@@ -684,7 +854,7 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
                     </label>
                   )}
                   {isGifOrLinkedInGif && (() => {
-                    const gifOut = computeGifOutput(t, frameCount);
+                    const gifOut = computeGifOutput(t, frameCount, recordingDimensions);
                     const simpleSliders = t.gifSimpleSliders ?? false;
                     const maxSizeSliderMax = isLinkedInGif ? 5 : 25;
                     const maxFramesSliderMax = isLinkedInGif ? 500 : 1000;
@@ -928,26 +1098,41 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
                   })()}
                   {t.platformId === CUSTOM_PRESET_ID && t.customPreset && (
                     <div className="export-dialog__custom-preset">
-                      <label className="export-dialog__row export-dialog__row--small">
-                        <span>Width</span>
+                      <label className="export-dialog__row export-dialog__row--check">
                         <input
-                          type="number"
-                          min={1}
-                          max={4096}
-                          value={t.customPreset.width}
-                          onChange={(e) => updateTarget(i, { customPreset: { ...t.customPreset!, width: parseInt(e.target.value, 10) || 1920 } })}
+                          type="checkbox"
+                          checked={t.matchRecordingSize ?? false}
+                          onChange={(e) => updateTarget(i, { matchRecordingSize: e.target.checked })}
                         />
+                        <span>Match recording size (output same resolution as recording)</span>
                       </label>
-                      <label className="export-dialog__row export-dialog__row--small">
-                        <span>Height</span>
-                        <input
-                          type="number"
-                          min={1}
-                          max={4096}
-                          value={t.customPreset.height}
-                          onChange={(e) => updateTarget(i, { customPreset: { ...t.customPreset!, height: parseInt(e.target.value, 10) || 1080 } })}
-                        />
-                      </label>
+                      {recordingDimensions && (t.matchRecordingSize ?? false) ? (
+                        <p className="export-dialog__hint">Output: {recordingDimensions.width}×{recordingDimensions.height} (same as recording)</p>
+                      ) : null}
+                      {!(t.matchRecordingSize ?? false) && (
+                        <>
+                          <label className="export-dialog__row export-dialog__row--small">
+                            <span>Width</span>
+                            <input
+                              type="number"
+                              min={1}
+                              max={4096}
+                              value={t.customPreset.width}
+                              onChange={(e) => updateTarget(i, { customPreset: { ...t.customPreset!, width: parseInt(e.target.value, 10) || 1920 } })}
+                            />
+                          </label>
+                          <label className="export-dialog__row export-dialog__row--small">
+                            <span>Height</span>
+                            <input
+                              type="number"
+                              min={1}
+                              max={4096}
+                              value={t.customPreset.height}
+                              onChange={(e) => updateTarget(i, { customPreset: { ...t.customPreset!, height: parseInt(e.target.value, 10) || 1080 } })}
+                            />
+                          </label>
+                        </>
+                      )}
                       <label className="export-dialog__row export-dialog__row--small">
                         <span>FPS</span>
                         <input
@@ -1006,14 +1191,6 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
                           onChange={(e) => updateTarget(i, { speedToFit: e.target.checked })}
                         />
                         <span>Speed up to fit platform max duration</span>
-                      </label>
-                      <label className="export-dialog__row export-dialog__row--check">
-                        <input
-                          type="checkbox"
-                          checked={t.cropToFit ?? DEFAULT_TARGET_OPTIONS.cropToFit}
-                          onChange={(e) => updateTarget(i, { cropToFit: e.target.checked })}
-                        />
-                        <span>Crop to fit resolution (no squish)</span>
                       </label>
                       <div className="export-dialog__row">
                         <span>Quality</span>

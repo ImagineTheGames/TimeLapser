@@ -20,7 +20,7 @@ interface TimeLapserAPI {
   getContinueSessionPath: () => Promise<string | null>;
   setContinueSessionPath: (path: string | null) => Promise<void>;
   getDefaultExportPath: (folder: string) => Promise<string>;
-  getFirstFrameDataUrl: (folder: string) => Promise<{ dataUrl: string | null }>;
+  getFirstFrameDataUrl: (folder: string) => Promise<{ dataUrl: string | null; width?: number; height?: number }>;
   showOutputFolderPicker: () => Promise<{ path: string | null }>;
   showExportSavePicker: (defaultPath: string, format?: string) => Promise<{ path: string | null }>;
   showAudioPicker: () => Promise<{ path: string | null }>;
@@ -58,8 +58,12 @@ interface CaptureSettings {
   extendedLogging: boolean;
   /** Last selected export format preset (e.g. youtube_standard). Default 16:9. */
   lastExportPlatformId?: string;
-  /** Last export "crop to fit" option. Default false. */
+  /** Last export "crop to fit" option. Default false. Kept for backward compat; lastExportFitMode takes precedence when set. */
   lastExportCropToFit?: boolean;
+  /** Last export fit mode: letterbox, crop, or stretch. Default stretch. */
+  lastExportFitMode?: 'letterbox' | 'crop' | 'stretch';
+  /** Screenshot resolution scale: 1 = 100%, 0.75 = 75%, 0.5 = 50%, 0.25 = 25%. Default 0.5. */
+  captureResolutionScale?: number;
 }
 
 interface ExportVideoArgs {
@@ -72,6 +76,11 @@ interface ExportVideoArgs {
   width: number;
   height: number;
   cropToFit?: boolean;
+  /** How to fit source into output: letterbox (pad), crop (cover), stretch (fill). Preferred over cropToFit when set. */
+  fitMode?: 'letterbox' | 'crop' | 'stretch';
+  /** Crop position when fitMode is crop: 0 = left/top, 0.5 = center, 1 = right/bottom. Default 0.5. */
+  cropOffsetX?: number;
+  cropOffsetY?: number;
   /** Cap output file size (e.g. 9.9*1024*1024 for Discord). May skip frames if needed. */
   maxFileSizeBytes?: number;
   /** Quality 0–100 (higher = less compression, larger file). Used when no size cap; affects CRF. */

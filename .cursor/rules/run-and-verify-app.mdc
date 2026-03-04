@@ -1,0 +1,77 @@
+---
+description: MANDATORY - Kill process, restart app, verify. Never skip.
+alwaysApply: true
+globs: ["**/*"]
+---
+
+# Run and verify TimeLapser (MANDATORY)
+
+**You must always do this after any change to Electron main, preload, React, or config. No exceptions.**
+
+## Rule: Kill → Build → Start → Verify
+
+1. **Kill** any running Electron/TimeLapser process.
+2. **Build** Electron with esbuild (main + preload).
+3. **Start** Vite (background), then launch Electron with the correct `VITE_DEV_SERVER_URL`.
+4. **Verify** in Electron output and (if applicable) `%APPDATA%\timelapser\logs\main.log` that the app started and there are no errors.
+
+If verification fails: fix the issue, then **do the full cycle again** (kill → build → start → verify). Do not leave the user with a broken run.
+
+---
+
+## NEVER skip
+
+- Do **not** finish a coding task and omit the run-and-verify steps.
+- Do **not** assume "user can run it themselves" — **you must restart the app for the user** and confirm it runs. Never hand off with "you can restart to see the changes."
+- Do **not** skip killing the process before restart (stale processes cause confusing failures).
+- Do **not** consider the task complete until the full cycle (kill → build → start → verify) has been run and verification has passed.
+- **When the user asks to "restart" or "restart the app":** run the full cycle (kill → build → start Vite → launch Electron → verify). Do not just remind them — perform the restart yourself.
+
+---
+
+## Step-by-step (mandatory when you're done with changes)
+
+### 1. Kill any running process (required every time)
+
+**Windows (PowerShell):** Always kill Electron first so no stale main process is running.
+```powershell
+Get-Process -Name electron -ErrorAction SilentlyContinue | Stop-Process -Force
+```
+
+Free port 5173 so Vite can bind (run this if the dev server will not start):
+```powershell
+Get-NetTCPConnection -LocalPort 5173 -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
+```
+
+### 2. Build Electron (use esbuild; project tsc may be broken)
+
+```powershell
+npx esbuild electron/main.ts --outfile=dist-electron/main.js --platform=node --format=cjs --packages=external
+npx esbuild electron/preload.ts --outfile=dist-electron/preload.js --platform=node --format=cjs --packages=external
+npx esbuild electron/preload-region-picker.ts --outfile=dist-electron/preload-region-picker.js --platform=node --format=cjs --packages=external
+Copy-Item -Path electron/region-picker.html -Destination dist-electron/region-picker.html -Force
+```
+
+### 3. Start Vite
+
+Run `npm run dev` in the background. Wait a few seconds, then read the Vite terminal output for the port (e.g. `Local: http://localhost:5176/`).
+
+### 4. Launch Electron with correct port
+
+If Vite is on 5173:
+```powershell
+$env:NODE_ENV='development'; npx electron .
+```
+
+If Vite used another port (e.g. 5176):
+```powershell
+$env:NODE_ENV='development'; $env:VITE_DEV_SERVER_URL='http://localhost:5176'; npx electron .
+```
+
+### 5. Verify
+
+- **Electron output:** Must see `[TimeLapser] Startup complete` and `[TimeLapser] Overlay finished loading`. No "App threw an error".
+- **Main log** (`%APPDATA%\timelapser\logs\main.log`): No "Renderer error:", "failed", or "Overlay failed to load" in the latest run.
+- **Vite terminal:** No "failed to compile", TypeScript errors, or fatal plugin errors.
+
+If any check fails: fix the cause, then **kill → build → start → verify** again. Do not stop until the app runs correctly.
