@@ -1,6 +1,6 @@
 ---
 description: When creating or planning a release - build, automated test, version bump, changelog, tag, and GitHub release with professional notes.
-globs: ["package.json", "README.md", ".github/workflows/*.yml", "RELEASE_NOTES*.md", "CHANGELOG.md", "scripts/run-recording-test.js"]
+globs: ["package.json", "README.md", ".github/workflows/*.yml", "RELEASE_NOTES*.md", "release-notes/*.md", "CHANGELOG.md", "scripts/run-recording-test.js"]
 ---
 
 # Release process (TimeLapser)
@@ -50,6 +50,16 @@ The release notes file is the **GitHub release description**. Keep it concise an
 
 End with an **Install** line:  
 `Download the Windows installer from the [Releases](https://github.com/ImagineTheGames/TimeLapser/releases) page.`
+
+### NEVER use generic-only release notes
+
+- **Forbidden**: A release note that only has a generic heading (e.g. "Maintenance and stability", "Bug fixes", "Various improvements") with **no** concrete bullets under **New**, **Changed**, or **Fixed**.
+- **Required**: Every release must list **actual changes** as bullets. If you don't know what changed, **derive them** before writing the note:
+  - Inspect `git diff` or recent commits since the last tag.
+  - Look at modified areas: `electron/`, `src/components/`, `package.json`, etc.
+  - Write at least one bullet per meaningful user- or behaviour-facing change (e.g. "**Export dialog** – …", "**Settings** – …", "**Recording** – …").
+- **Exception**: If the release is truly tooling-only (no user-facing or behaviour change), say so in one concrete line, e.g. "**Build** – Dependency or tooling updates only; no user-facing changes." Do **not** use a vague "Maintenance and stability" with nothing else.
+- **When creating a release**: Never invent placeholder or filler text. If you have not yet determined what changed, **stop and gather the changes first** (diffs, commit messages), then write the notes.
 
 ## 4. Git and tag
 
