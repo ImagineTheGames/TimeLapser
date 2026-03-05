@@ -95,6 +95,8 @@ interface CaptureSettings {
   lastExportCropToFit?: boolean;
   /** Last export fit mode: letterbox, crop, or stretch. Default stretch. */
   lastExportFitMode?: 'letterbox' | 'crop' | 'stretch';
+  /** Last export crop zoom when fit mode is crop: 1 = fill frame, 0.5–1 = show more content (letterbox). Default 1. */
+  lastExportCropZoom?: number;
   /** Screenshot resolution scale: 1 = 100%, 0.75 = 75%, 0.5 = 50%, 0.25 = 25%. Reduces disk usage. Default 0.5. */
   captureResolutionScale?: number;
 }
@@ -251,6 +253,32 @@ function ensureOverlayWindow() {
     overlayLoadFailed = false;
     logMinimal('Overlay finished loading');
     if (overlayWindow && !overlayWindow.isDestroyed()) {
+      if (process.argv.includes('--test-export-zoom')) {
+        runExportZoomTest(overlayWindow)
+          .then((result) => {
+            const userData = app.getPath('userData');
+            const resultPath = path.join(userData, 'export-test-result.json');
+            try {
+              fs.writeFileSync(resultPath, JSON.stringify(result, null, 2), 'utf8');
+            } catch (e) {
+              logError('export-test write result', (e as Error)?.message);
+            }
+            logMinimal('export-test done', result.success ? 'SUCCESS' : 'FAIL', resultPath);
+            app.quit(result.success ? 0 : 1);
+          })
+          .catch((err) => {
+            logError('export-test error', (err as Error)?.message);
+            try {
+              fs.writeFileSync(
+                path.join(app.getPath('userData'), 'export-test-result.json'),
+                JSON.stringify({ success: false, error: String(err) }, null, 2),
+                'utf8'
+              );
+            } catch {}
+            app.quit(1);
+          });
+        return;
+      }
       if (shouldShowWindowOnStartup()) {
         markStartupWindowShown();
         if (overlayWindow.isMinimized()) overlayWindow.restore();
@@ -381,6 +409,59 @@ async function getTrayIcon(): Promise<Electron.NativeImage> {
     .png()
     .toBuffer();
   return nativeImage.createFromBuffer(fallback);
+}
+
+/** Used by --test-export-zoom: find last session, export with cropZoom 0.7, return result. */
+async function runExportZoomTest(win: BrowserWindow): Promise<{ success: boolean; path?: string; error?: string }> {
+  const base = getSettings().outputFolder;
+  if (!base || !fs.existsSync(base)) {
+    return { success: false, error: 'No output folder' };
+  }
+  const dirs = fs.readdirSync(base, { withFileTypes: true })
+    .filter((e) => e.isDirectory() && /^session_\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}/.test(e.name))
+    .map((e) => e.name)
+    .sort()
+    .reverse();
+  if (dirs.length === 0) {
+    return { success: false, error: 'No session folder found' };
+  }
+  const sessionFolder = path.join(base, dirs[0]);
+  const outputPath = path.join(base, dirs[0] + '_zoom_test.mp4');
+  const args = {
+    sessionFolder,
+    outputPath,
+    platform: 'instagram_reels',
+    format: 'mp4' as const,
+    maxDurationSeconds: 0,
+    fps: 30,
+    width: 1080,
+    height: 1920,
+    fitMode: 'crop' as const,
+    cropToFit: true,
+    cropOffsetX: 0.5,
+    cropOffsetY: 0.5,
+    cropZoom: 0.7,
+    quality: 70,
+    audioPath: null as string | null,
+    fadeInSeconds: 0,
+    fadeOutSeconds: 0,
+    watermarkPath: null as string | null,
+    watermarkPosition: 'bottom-right' as const,
+  };
+  logMinimal('export-test: session', sessionFolder, 'cropZoom', 0.7);
+  const argsJson = JSON.stringify(args).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  try {
+    const result = await win.webContents.executeJavaScript(
+      `(async () => { return await window.timelapser.exportVideo(JSON.parse('${argsJson}')); })()`
+    );
+    return {
+      success: !!result?.ok,
+      path: result?.path,
+      error: result?.ok ? undefined : (result?.message || 'Export failed'),
+    };
+  } catch (e) {
+    return { success: false, error: (e as Error)?.message };
+  }
 }
 
 async function createWindow() {
@@ -838,7 +919,7 @@ const OVERLAY_WIDTH_WITH_PANEL = OVERLAY_WIDTH + SETTINGS_PANEL_WIDTH + SETTINGS
 /** When expanded, true = panel is to the right of the bar (window grew right); false = panel to the left (window grew left). */
 let overlayPanelOnRight = false;
 
-/** Set overlay size and position. When expandedWithPanel, window widens so settings stay close to the bar. Prefers panel to the left of the bar; if not enough room (near left edge), keeps window position and puts panel to the right so the bar does not move. */
+/** Set overlay size and position. When expandedWithPanel, window widens and grows in place (keeps top-left, like Export). Panel is always to the right of the bar. */
 function setOverlayBoundsAndSize(newHeight: number, expandedWithPanel?: boolean): void {
   if (!overlayWindow || overlayWindow.isDestroyed()) return;
   const bounds = overlayWindow.getBounds();
@@ -860,19 +941,9 @@ function setOverlayBoundsAndSize(newHeight: number, expandedWithPanel?: boolean)
     const waBottom = workArea.y + workArea.height;
 
     if (expandedWithPanel === true) {
-      const barRight = bounds.x + bounds.width;
-      const idealX = barRight - OVERLAY_WIDTH_WITH_PANEL;
-      if (idealX >= waLeft + MARGIN) {
-        x = idealX;
-        overlayPanelOnRight = false;
-      } else {
-        x = bounds.x;
-        overlayPanelOnRight = true;
-      }
+      overlayPanelOnRight = true;
     } else if (expandedWithPanel === false) {
-      x = overlayPanelOnRight
-        ? bounds.x
-        : bounds.x + (bounds.width - OVERLAY_WIDTH);
+      x = bounds.x;
       overlayPanelOnRight = false;
     }
 
@@ -1032,7 +1103,8 @@ ipcMain.handle('get-startup-flags', () => {
   const userData = app.getPath('userData');
   const isTestUserData = userData.includes('.timelapser-test');
   const runRecordingTest = process.env.RUN_RECORDING_TEST === '1' && isTestUserData;
-  return { runRecordingTest };
+  const showTestUI = process.argv.includes('--test') || process.argv.includes('-test');
+  return { runRecordingTest, showTestUI };
 });
 
 ipcMain.handle('recording-test-complete', (_e, payload: { success: boolean; failureReason?: string; logExcerpt?: string }) => {
@@ -1293,6 +1365,8 @@ ipcMain.handle('export-video', async (_e, args: {
   /** Crop position when fitMode is crop: 0 = left/top, 0.5 = center, 1 = right/bottom. Default 0.5. */
   cropOffsetX?: number;
   cropOffsetY?: number;
+  /** When fitMode is crop: 1 = fill frame (crop overflow); 0.5–1 = zoom out to show more content (letterbox). Default 1. */
+  cropZoom?: number;
   maxFileSizeBytes?: number;
   audioPath?: string | null;
   fadeInSeconds?: number;
@@ -1304,6 +1378,13 @@ ipcMain.handle('export-video', async (_e, args: {
   watermarkPath?: string | null;
   watermarkPosition?: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right' | 'center';
 }) => {
+  const a = args as Record<string, unknown>;
+  const cropZoomRaw = a.cropZoom;
+  const cropZoom = typeof cropZoomRaw === 'number' && Number.isFinite(cropZoomRaw)
+    ? Math.max(0.5, Math.min(1, cropZoomRaw))
+    : typeof cropZoomRaw === 'string'
+      ? Math.max(0.5, Math.min(1, parseFloat(cropZoomRaw) || 1))
+      : 1;
   const {
     sessionFolder, outputPath, maxDurationSeconds, fps, width, height,
     cropToFit = false,
@@ -1321,6 +1402,7 @@ ipcMain.handle('export-video', async (_e, args: {
     watermarkPath = null,
     watermarkPosition = 'bottom-right',
   } = args;
+  logMinimal('export-video: cropZoom', cropZoom, 'fitMode', fitMode);
   const hasWatermark = !!(watermarkPath && fs.existsSync(watermarkPath));
   const isGif = format === 'gif';
   /** Map quality 0–100 to CRF (100 = best quality/low CRF, 0 = high compression/high CRF). */
@@ -1363,6 +1445,7 @@ ipcMain.handle('export-video', async (_e, args: {
   } catch {
     // ignore; crop will use center when srcW/srcH are 0
   }
+  logMinimal('export-video: first frame size', srcW, 'x', srcH);
   let ffmpegPath: string | null = null;
   try {
     ffmpegPath = require('@ffmpeg-installer/ffmpeg').path;
@@ -1489,18 +1572,27 @@ ipcMain.handle('export-video', async (_e, args: {
       if (gifFitMode === 'stretch') {
         vfParts.push(`scale=${outW}:${outH}:flags=lanczos`);
       } else if (gifFitMode === 'crop') {
-        vfParts.push(`scale=${outW}:${outH}:force_original_aspect_ratio=increase`);
+        const zoom = Math.max(0.5, Math.min(1, cropZoom));
         if (srcW > 0 && srcH > 0) {
-          const scale = Math.max(outW / srcW, outH / srcH);
-          const scaleW = Math.round(srcW * scale);
-          const scaleH = Math.round(srcH * scale);
-          let cropX = Math.round((scaleW - outW) * cropOffsetX);
-          let cropY = Math.round((scaleH - outH) * cropOffsetY);
-          cropX = Math.max(0, Math.min(scaleW - outW, cropX));
-          cropY = Math.max(0, Math.min(scaleH - outH, cropY));
-          vfParts.push(`crop=${outW}:${outH}:${cropX}:${cropY}`);
+          const scaleCover = Math.max(outW / srcW, outH / srcH);
+          const scaleContain = Math.min(outW / srcW, outH / srcH);
+          const t = (zoom - 0.5) / 0.5;
+          const effectiveScale = scaleContain + (scaleCover - scaleContain) * t;
+          const contentW = Math.max(1, Math.round(srcW * effectiveScale));
+          const contentH = Math.max(1, Math.round(srcH * effectiveScale));
+          if (contentW >= outW && contentH >= outH) {
+            let cropX = Math.round((contentW - outW) * cropOffsetX);
+            let cropY = Math.round((contentH - outH) * cropOffsetY);
+            cropX = Math.max(0, Math.min(contentW - outW, cropX));
+            cropY = Math.max(0, Math.min(contentH - outH, cropY));
+            vfParts.push(`scale=${contentW}:${contentH}:flags=lanczos`, `crop=${outW}:${outH}:${cropX}:${cropY}`);
+          } else {
+            const padX = Math.max(0, Math.round((outW - contentW) / 2));
+            const padY = Math.max(0, Math.round((outH - contentH) / 2));
+            vfParts.push(`scale=${contentW}:${contentH}:flags=lanczos`, `pad=${outW}:${outH}:${padX}:${padY}:black`);
+          }
         } else {
-          vfParts.push(`crop=${outW}:${outH}`);
+          vfParts.push(`scale=${outW}:${outH}:force_original_aspect_ratio=increase`, `crop=${outW}:${outH}`);
         }
       } else {
         vfParts.push(`scale=${outW}:${outH}:force_original_aspect_ratio=decrease`, `pad=${outW}:${outH}:(ow-iw)/2:(oh-ih)/2`);
@@ -1592,18 +1684,31 @@ ipcMain.handle('export-video', async (_e, args: {
       if (mode === 'stretch') {
         vfParts.push(`scale=${width}:${height}`);
       } else if (mode === 'crop') {
-        vfParts.push(`scale=${width}:${height}:force_original_aspect_ratio=increase`);
+        const zoom = Math.max(0.5, Math.min(1, cropZoom));
+        logMinimal('export-video: crop branch zoom=', zoom, 'src=', srcW, 'x', srcH);
         if (srcW > 0 && srcH > 0) {
-          const scale = Math.max(width / srcW, height / srcH);
-          const scaleW = Math.round(srcW * scale);
-          const scaleH = Math.round(srcH * scale);
-          let cropX = Math.round((scaleW - width) * cropOffsetX);
-          let cropY = Math.round((scaleH - height) * cropOffsetY);
-          cropX = Math.max(0, Math.min(scaleW - width, cropX));
-          cropY = Math.max(0, Math.min(scaleH - height, cropY));
-          vfParts.push(`crop=${width}:${height}:${cropX}:${cropY}`);
+          const scaleCover = Math.max(width / srcW, height / srcH);
+          const scaleContain = Math.min(width / srcW, height / srcH);
+          const t = (zoom - 0.5) / 0.5;
+          const effectiveScale = scaleContain + (scaleCover - scaleContain) * t;
+          const contentW = Math.max(1, Math.round(srcW * effectiveScale));
+          const contentH = Math.max(1, Math.round(srcH * effectiveScale));
+          logMinimal('export-video: zoom scale cover=', scaleCover, 'contain=', scaleContain, 't=', t, 'effective=', effectiveScale, 'content=', contentW, 'x', contentH);
+          if (contentW >= width && contentH >= height) {
+            let cropX = Math.round((contentW - width) * cropOffsetX);
+            let cropY = Math.round((contentH - height) * cropOffsetY);
+            cropX = Math.max(0, Math.min(contentW - width, cropX));
+            cropY = Math.max(0, Math.min(contentH - height, cropY));
+            vfParts.push(`scale=${contentW}:${contentH}`, `crop=${width}:${height}:${cropX}:${cropY}`);
+            logMinimal('export-video: zoom filter scale', contentW, contentH, 'crop', width, height, cropX, cropY);
+          } else {
+            const padX = Math.max(0, Math.round((width - contentW) / 2));
+            const padY = Math.max(0, Math.round((height - contentH) / 2));
+            vfParts.push(`scale=${contentW}:${contentH}`, `pad=${width}:${height}:${padX}:${padY}:black`);
+            logMinimal('export-video: zoom filter scale', contentW, contentH, 'pad', width, height, padX, padY);
+          }
         } else {
-          vfParts.push(`crop=${width}:${height}`);
+          vfParts.push(`scale=${width}:${height}:force_original_aspect_ratio=increase`, `crop=${width}:${height}`);
         }
       } else {
         vfParts.push(`scale=${width}:${height}:force_original_aspect_ratio=decrease`, `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2`);

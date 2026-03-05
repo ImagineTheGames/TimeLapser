@@ -71,6 +71,7 @@ const DEFAULT_TARGET_OPTIONS = {
   speedToFit: true,
   cropToFit: false,
   fitMode: 'stretch' as FitMode,
+  cropZoom: 1,
   quality: 70,
   maxFileSizeMb: null as number | null,
 };
@@ -104,6 +105,8 @@ export interface ExportTarget {
   /** When fitMode is crop: position of crop window 0–1 (0=left/top, 0.5=center, 1=right/bottom). Default 0.5. */
   cropOffsetX?: number;
   cropOffsetY?: number;
+  /** When fitMode is crop: 1 = fill frame; 0.5–1 = zoom out to show more content (letterbox). Default 1. */
+  cropZoom?: number;
   quality?: number;
   maxFileSizeMb?: number | null;
   /** Hold last frame: number of additional frames to duplicate at the end. 0 = off. */
@@ -114,7 +117,7 @@ export interface ExportTarget {
   gifSimpleSliders?: boolean;
 }
 
-/** Crop position preview: full image with draggable export frame (9:16 or 16:9). Used when fitMode is crop. */
+/** Crop position preview: full image with draggable export frame (9:16 or 16:9). When cropZoom < 1, shows output frame with scaled image that you drag to position. */
 function CropPositionPreview({
   firstFrameDataUrl,
   recordingDimensions,
@@ -122,6 +125,7 @@ function CropPositionPreview({
   outHeight,
   cropOffsetX = 0.5,
   cropOffsetY = 0.5,
+  cropZoom = 1,
   onOffsetChange,
 }: {
   firstFrameDataUrl: string;
@@ -130,6 +134,7 @@ function CropPositionPreview({
   outHeight: number;
   cropOffsetX?: number;
   cropOffsetY?: number;
+  cropZoom?: number;
   onOffsetChange: (cropOffsetX: number, cropOffsetY: number) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -138,16 +143,21 @@ function CropPositionPreview({
 
   const srcW = recordingDimensions.width;
   const srcH = recordingDimensions.height;
-  const scale = Math.max(outWidth / srcW, outHeight / srcH);
-  const scaleW = srcW * scale;
-  const scaleH = srcH * scale;
-  const cropX = (scaleW - outWidth) * cropOffsetX;
-  const cropY = (scaleH - outHeight) * cropOffsetY;
-  const leftPct = scaleW > 0 ? (cropX / scaleW) * 100 : 0;
-  const topPct = scaleH > 0 ? (cropY / scaleH) * 100 : 0;
-  const widthPct = scaleW > 0 ? (outWidth / scaleW) * 100 : 100;
-  const heightPct = scaleH > 0 ? (outHeight / scaleH) * 100 : 100;
+  const zoom = Math.max(0.5, Math.min(1, cropZoom));
+  const scaleCover = Math.max(outWidth / srcW, outHeight / srcH);
+  const scaleContain = Math.min(outWidth / srcW, outHeight / srcH);
+  const t = (zoom - 0.5) / 0.5;
+  const effectiveScale = scaleContain + (scaleCover - scaleContain) * t;
 
+  const visibleW = Math.min(srcW, outWidth / effectiveScale);
+  const visibleH = Math.min(srcH, outHeight / effectiveScale);
+
+  const widthPct = (visibleW / srcW) * 100;
+  const heightPct = (visibleH / srcH) * 100;
+  const slackW = srcW - visibleW;
+  const slackH = srcH - visibleH;
+  const leftPct = slackW > 0 ? (cropOffsetX * slackW / srcW) * 100 : (100 - widthPct) / 2;
+  const topPct = slackH > 0 ? (cropOffsetY * slackH / srcH) * 100 : (100 - heightPct) / 2;
   const maxLeftPct = Math.max(0, 100 - widthPct);
   const maxTopPct = Math.max(0, 100 - heightPct);
 
@@ -201,7 +211,7 @@ function CropPositionPreview({
           src={firstFrameDataUrl}
           alt="Recording"
           className="export-dialog__crop-position-img"
-          style={{ objectFit: 'contain' }}
+          style={{ objectFit: 'contain', width: '100%', height: '100%' }}
         />
         <div
           role="presentation"
@@ -218,6 +228,63 @@ function CropPositionPreview({
       </div>
     </div>
   );
+}
+
+/** Crop preview style for the top card: same scale/crop math as backend so zoom and drag position match export. */
+function getCropPreviewStyle(
+  outWidth: number,
+  outHeight: number,
+  recordingDimensions: { width: number; height: number },
+  cropOffsetX: number,
+  cropOffsetY: number,
+  cropZoom: number
+): {
+  objectFit: 'cover' | 'contain';
+  objectPosition: string;
+  zoomClass: boolean;
+  previewZoom?: number;
+  wrapperStyle?: { width: string; height: string; left: string; top: string; transform: string };
+} {
+  const srcW = recordingDimensions.width;
+  const srcH = recordingDimensions.height;
+  const zoom = Math.max(0.5, Math.min(1, cropZoom));
+  const scaleCover = Math.max(outWidth / srcW, outHeight / srcH);
+  if (zoom >= 1) {
+    const scaleW = srcW * scaleCover;
+    const scaleH = srcH * scaleCover;
+    const cropX = (scaleW - outWidth) * cropOffsetX;
+    const cropY = (scaleH - outHeight) * cropOffsetY;
+    const px = scaleW > 0 ? ((cropX + outWidth / 2) / scaleW) * 100 : 50;
+    const py = scaleH > 0 ? ((cropY + outHeight / 2) / scaleH) * 100 : 50;
+    return { objectFit: 'cover', objectPosition: `${px}% ${py}%`, zoomClass: false };
+  }
+  const scaleContain = Math.min(outWidth / srcW, outHeight / srcH);
+  const t = (zoom - 0.5) / 0.5;
+  const effectiveScale = scaleContain + (scaleCover - scaleContain) * t;
+  const imgWidthPct = (srcW * effectiveScale / outWidth) * 100;
+  const imgHeightPct = (srcH * effectiveScale / outHeight) * 100;
+  let leftPct: number;
+  let topPct: number;
+  if (imgWidthPct >= 100 && imgHeightPct >= 100) {
+    leftPct = -(imgWidthPct - 100) * cropOffsetX;
+    topPct = -(imgHeightPct - 100) * cropOffsetY;
+  } else {
+    leftPct = imgWidthPct < 100 ? (100 - imgWidthPct) / 2 : -(imgWidthPct - 100) * cropOffsetX;
+    topPct = imgHeightPct < 100 ? (100 - imgHeightPct) / 2 : -(imgHeightPct - 100) * cropOffsetY;
+  }
+  return {
+    objectFit: 'cover',
+    objectPosition: '50% 50%',
+    zoomClass: true,
+    previewZoom: zoom,
+    wrapperStyle: {
+      width: `${imgWidthPct}%`,
+      height: `${imgHeightPct}%`,
+      left: `${leftPct}%`,
+      top: `${topPct}%`,
+      transform: 'none',
+    },
+  };
 }
 
 function getPresetForTarget(t: ExportTarget, recordingDimensions?: { width: number; height: number } | null): Preset {
@@ -385,15 +452,18 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
       ...DEFAULT_TARGET_OPTIONS,
     },
   ]);
+  const targetsRef = useRef(targets);
+  targetsRef.current = targets;
 
   useEffect(() => {
     window.timelapser.getSettings().then((s) => {
       const savedId = s.lastExportPlatformId ?? DEFAULT_EXPORT_PLATFORM_ID;
       const platformId = SOCIAL_PRESETS.some((p) => p.id === savedId) || savedId === CUSTOM_PRESET_ID || savedId === GIF_PRESET_ID || savedId === LINKEDIN_GIF_PRESET_ID ? savedId : DEFAULT_EXPORT_PLATFORM_ID;
       const fitMode = s.lastExportFitMode ?? (s.lastExportCropToFit === true ? 'crop' as const : s.lastExportCropToFit === false ? 'letterbox' as const : DEFAULT_TARGET_OPTIONS.fitMode);
+      const cropZoom = Math.max(0.5, Math.min(1, s.lastExportCropZoom ?? 1));
       setTargets((prev) => {
         if (prev.length === 0) return prev;
-        return [{ ...prev[0], platformId, fitMode, cropToFit: fitMode === 'crop' }, ...prev.slice(1)];
+        return [{ ...prev[0], platformId, fitMode, cropToFit: fitMode === 'crop', cropZoom }, ...prev.slice(1)];
       });
     });
   }, []);
@@ -457,6 +527,7 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
       matchRecordingSize: last?.matchRecordingSize ?? false,
       cropOffsetX: last?.cropOffsetX,
       cropOffsetY: last?.cropOffsetY,
+      cropZoom: last?.cropZoom ?? DEFAULT_TARGET_OPTIONS.cropZoom,
       quality: last?.quality ?? DEFAULT_TARGET_OPTIONS.quality,
       maxFileSizeMb: last?.maxFileSizeMb ?? DEFAULT_TARGET_OPTIONS.maxFileSizeMb,
       duplicateLastFrameCount: last?.duplicateLastFrameCount ?? 0,
@@ -490,6 +561,7 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
         matchRecordingSize: prev.matchRecordingSize ?? false,
         cropOffsetX: prev.cropOffsetX,
         cropOffsetY: prev.cropOffsetY,
+        cropZoom: prev.cropZoom ?? DEFAULT_TARGET_OPTIONS.cropZoom,
         quality: prev.quality ?? DEFAULT_TARGET_OPTIONS.quality,
         maxFileSizeMb: prev.maxFileSizeMb ?? DEFAULT_TARGET_OPTIONS.maxFileSizeMb,
         duplicateLastFrameCount: prev.duplicateLastFrameCount ?? 0,
@@ -503,10 +575,16 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
     setTargets(targets.filter((_, idx) => idx !== i));
   };
   const updateTarget = (i: number, upd: Partial<ExportTarget>) => {
-    if (i === 0 && (upd.platformId != null || upd.fitMode !== undefined || upd.cropToFit !== undefined)) {
+    if (i === 0 && (upd.platformId != null || upd.fitMode !== undefined || upd.cropToFit !== undefined || upd.cropZoom !== undefined)) {
       const nextPlatform = upd.platformId ?? targets[0].platformId;
       const nextFitMode = upd.fitMode ?? (upd.cropToFit === true ? 'crop' : upd.cropToFit === false ? 'letterbox' : (targets[0].fitMode ?? DEFAULT_TARGET_OPTIONS.fitMode));
-      window.timelapser.setSettings({ lastExportPlatformId: nextPlatform, lastExportFitMode: nextFitMode, lastExportCropToFit: nextFitMode === 'crop' });
+      const nextCropZoom = upd.cropZoom ?? targets[0].cropZoom ?? 1;
+      window.timelapser.setSettings({
+        lastExportPlatformId: nextPlatform,
+        lastExportFitMode: nextFitMode,
+        lastExportCropToFit: nextFitMode === 'crop',
+        lastExportCropZoom: nextFitMode === 'crop' ? nextCropZoom : undefined,
+      });
     }
     setTargets(targets.map((t, idx) => {
       if (idx !== i) return t;
@@ -553,10 +631,17 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
   useEffect(() => {
     if (!selectedSessionFolder) return;
     window.timelapser.getFirstFrameDataUrl(selectedSessionFolder).then(({ dataUrl, width, height }) => {
-      setFirstFrameDataUrl(dataUrl);
-      setRecordingDimensions(width != null && height != null ? { width, height } : null);
+      setFirstFrameDataUrl(dataUrl ?? null);
+      setRecordingDimensions(width != null && height != null && width > 0 && height > 0 ? { width, height } : null);
     });
   }, [selectedSessionFolder]);
+
+  const onFirstFrameLoad = useCallback((e: React.SyntheticEvent<HTMLImageElement>) => {
+    const img = e.currentTarget;
+    if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+      setRecordingDimensions((prev) => (prev && prev.width > 0 ? prev : { width: img.naturalWidth, height: img.naturalHeight }));
+    }
+  }, []);
 
   const pickMusic = async () => {
     const { path: p } = await window.timelapser.showAudioPicker();
@@ -574,7 +659,8 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
 
   const handleExport = async () => {
     if (!selectedSessionFolder) return;
-    const toExport = targets.filter((t) => t.outputPath?.trim());
+    const currentTargets = targetsRef.current;
+    const toExport = currentTargets.filter((t) => t.outputPath?.trim());
     if (toExport.length === 0) return;
     setExporting(true);
     setMessage(null);
@@ -582,8 +668,8 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
     const okPaths: string[] = [];
     let errMsg: string | null = null;
     let done = 0;
-    for (let i = 0; i < targets.length; i++) {
-      const t = targets[i];
+    for (let i = 0; i < currentTargets.length; i++) {
+      const t = currentTargets[i];
       if (!t.outputPath?.trim()) continue;
       const format = getFormatForTarget(t);
       const ext = format;
@@ -595,6 +681,7 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
       const fitMode = t.fitMode ?? DEFAULT_TARGET_OPTIONS.fitMode;
       const quality = t.quality ?? DEFAULT_TARGET_OPTIONS.quality;
       const maxFileSizeMb = t.maxFileSizeMb ?? DEFAULT_TARGET_OPTIONS.maxFileSizeMb;
+      const cropZoomNum = typeof t.cropZoom === 'number' && t.cropZoom >= 0.5 && t.cropZoom <= 1 ? t.cropZoom : 1;
       const result = await window.timelapser.exportVideo({
         sessionFolder: selectedSessionFolder,
         outputPath: finalPath,
@@ -608,6 +695,7 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
         cropToFit: fitMode === 'crop',
         cropOffsetX: t.cropOffsetX ?? 0.5,
         cropOffsetY: t.cropOffsetY ?? 0.5,
+        cropZoom: cropZoomNum,
         maxFileSizeBytes: maxFileSizeMb != null && maxFileSizeMb > 0 ? Math.round(maxFileSizeMb * 1024 * 1024) : undefined,
         quality: format === 'gif' ? (t.gifQuality ?? 70) : quality,
         audioPath: format === 'gif' ? null : (audioPath || null),
@@ -766,8 +854,30 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
               const isLinkedInGif = t.platformId === LINKEDIN_GIF_PRESET_ID;
               const isGifOrLinkedInGif = isGif || isLinkedInGif;
               const fitMode = t.fitMode ?? DEFAULT_TARGET_OPTIONS.fitMode;
-              const previewObjectFit = fitMode === 'crop' ? 'cover' : fitMode === 'stretch' ? 'fill' : 'contain';
-              const previewTitle = fitMode === 'crop' ? 'Crop to fit' : fitMode === 'stretch' ? 'Stretch' : 'Letterbox';
+              const cropZoom = typeof t.cropZoom === 'number' ? Math.max(0.5, Math.min(1, t.cropZoom)) : 1;
+              const cropPreviewStyle =
+                fitMode === 'crop' && recordingDimensions && recordingDimensions.width > 0 && recordingDimensions.height > 0
+                  ? getCropPreviewStyle(
+                      p.width,
+                      p.height,
+                      recordingDimensions,
+                      typeof t.cropOffsetX === 'number' ? t.cropOffsetX : 0.5,
+                      typeof t.cropOffsetY === 'number' ? t.cropOffsetY : 0.5,
+                      cropZoom
+                    )
+                  : null;
+              const previewObjectFit =
+                fitMode === 'crop' && cropPreviewStyle
+                  ? cropPreviewStyle.objectFit
+                  : fitMode === 'crop'
+                    ? 'cover'
+                    : fitMode === 'stretch'
+                      ? 'fill'
+                      : 'contain';
+              const previewTitle =
+                fitMode === 'crop'
+                  ? (cropZoom >= 1 ? 'Crop to fit' : `Crop to fit (${Math.round(cropZoom * 100)}% – more content)`)
+                  : fitMode === 'stretch' ? 'Stretch' : 'Letterbox';
               return (
                 <div key={i} className="export-dialog__target-card">
                   <div className="export-dialog__target-card-header">
@@ -797,23 +907,49 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
                     )}
                   </div>
                   <div
-                    className={`export-dialog__preview export-dialog__target-preview ${firstFrameDataUrl ? 'export-dialog__preview--with-image' : ''}`}
-                    style={{ aspectRatio: p.aspectRatio.replace(':', '/'), maxWidth: '100%', maxHeight: 140, minHeight: 80 }}
+                    className={`export-dialog__preview export-dialog__target-preview ${firstFrameDataUrl ? 'export-dialog__preview--with-image' : ''} ${cropPreviewStyle?.zoomClass ? 'export-dialog__preview--zoom' : ''} ${cropPreviewStyle?.wrapperStyle ? 'export-dialog__preview--crop-wrapper' : ''}`}
+                    style={{
+                      aspectRatio: `${p.width} / ${p.height}`,
+                      maxWidth: '100%',
+                      maxHeight: 140,
+                      minHeight: 80,
+                      ...(cropPreviewStyle?.previewZoom != null ? { ['--preview-zoom' as string]: cropPreviewStyle.previewZoom } : {}),
+                    }}
                     title={`Preview: ${previewTitle} · ${p.aspectRatio}`}
                   >
                     {firstFrameDataUrl ? (
-                      <img
-                        src={firstFrameDataUrl}
-                        alt="Export preview"
-                        className="export-dialog__preview-img"
-                        style={{ objectFit: previewObjectFit }}
-                      />
+                      cropPreviewStyle?.wrapperStyle ? (
+                        <div
+                          key={`crop-${i}-${cropZoom}-${t.cropOffsetX ?? 0.5}-${t.cropOffsetY ?? 0.5}`}
+                          className="export-dialog__preview-crop-wrapper"
+                          style={cropPreviewStyle.wrapperStyle}
+                        >
+                          <img
+                            src={firstFrameDataUrl}
+                            alt="Export preview"
+                            className="export-dialog__preview-img"
+                            style={{ objectFit: 'cover' }}
+                            onLoad={onFirstFrameLoad}
+                          />
+                        </div>
+                      ) : (
+                        <img
+                          src={firstFrameDataUrl}
+                          alt="Export preview"
+                          className="export-dialog__preview-img"
+                          style={{
+                            objectFit: previewObjectFit,
+                            ...(cropPreviewStyle ? { objectPosition: cropPreviewStyle.objectPosition } : {}),
+                          }}
+                          onLoad={onFirstFrameLoad}
+                        />
+                      )
                     ) : null}
                     <span className="export-dialog__preview-label">{p.aspectRatio}</span>
                     <span className="export-dialog__preview-size">{p.width}×{p.height}</span>
                   </div>
                   <div className="export-dialog__fit-mode export-dialog__row">
-                    <span className="export-dialog__fit-mode-label">Fit image</span>
+                    <span className="export-dialog__label">Fit image</span>
                     <div className="export-dialog__fit-mode-options" role="group" aria-label="Fit image">
                       {(['letterbox', 'crop', 'stretch'] as const).map((mode) => (
                         <label key={mode} className="export-dialog__fit-mode-option">
@@ -827,8 +963,24 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
                         </label>
                       ))}
                     </div>
-                    <p className="export-dialog__hint export-dialog__hint-inline">Letterbox = pad to fit. Crop = fill and trim. Stretch = fill exact size (may distort).</p>
                   </div>
+                  {fitMode === 'crop' && (
+                    <label className="export-dialog__row export-dialog__crop-zoom-row">
+                      <span className="export-dialog__label">Zoom</span>
+                      <div className="export-dialog__crop-zoom-control">
+                        <input
+                          type="range"
+                          min={50}
+                          max={100}
+                          step={5}
+                          value={Math.round((t.cropZoom ?? 1) * 100)}
+                          onChange={(e) => updateTarget(i, { cropZoom: parseInt(e.target.value, 10) / 100 })}
+                          aria-label="Crop zoom"
+                        />
+                        <span className="export-dialog__crop-zoom-value">{Math.round((t.cropZoom ?? 1) * 100)}%</span>
+                      </div>
+                    </label>
+                  )}
                   {fitMode === 'crop' && (p.aspectRatio === '9:16' || p.aspectRatio === '16:9') && firstFrameDataUrl && recordingDimensions && recordingDimensions.width > 0 && recordingDimensions.height > 0 && (
                     <CropPositionPreview
                       firstFrameDataUrl={firstFrameDataUrl}
@@ -837,6 +989,7 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
                       outHeight={p.height}
                       cropOffsetX={t.cropOffsetX ?? 0.5}
                       cropOffsetY={t.cropOffsetY ?? 0.5}
+                      cropZoom={t.cropZoom ?? 1}
                       onOffsetChange={(cropOffsetX, cropOffsetY) => updateTarget(i, { cropOffsetX, cropOffsetY })}
                     />
                   )}
@@ -1168,9 +1321,8 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
                   )}
                   {!isGifOrLinkedInGif && (
                     <>
-                      <label className="export-dialog__row">
-                        <span>Target video length (s)</span>
-                        <span className="export-dialog__hint">How long your timelapse will be.</span>
+                      <label className="export-dialog__row export-dialog__row--tight">
+                        <span>Timelapse length (s)</span>
                         <input
                           type="number"
                           min={0}
@@ -1269,7 +1421,7 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
               );
             })}
             <button type="button" className="export-dialog__btn export-dialog__btn--secondary" onClick={addTarget}>
-              Add another format…
+              Add another export…
             </button>
           </div>
 

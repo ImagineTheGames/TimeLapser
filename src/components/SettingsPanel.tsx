@@ -108,12 +108,14 @@ interface SettingsPanelProps {
   inline?: boolean;
   /** When true, auto-start the recording test when panel mounts (e.g. from Cursor script) */
   autoRunRecordingTest?: boolean;
+  /** When true, show the "Automated recording test" section (e.g. when app is started with -test or --test) */
+  showTestUI?: boolean;
 }
 
 const PANEL_WIDTH = 380;
 const BAR_HEIGHT = 88;
 
-export default function SettingsPanel({ sessionFolder, frameCount, onClose, onOpenFocusAssist, inline = false, autoRunRecordingTest = false }: SettingsPanelProps) {
+export default function SettingsPanel({ sessionFolder, frameCount, onClose, onOpenFocusAssist, inline = false, autoRunRecordingTest = false, showTestUI = false }: SettingsPanelProps) {
   const [displays, setDisplays] = useState<Display[]>([]);
   const [settings, setSettings] = useState<Partial<Record<string, unknown>>>({});
   const [sessionSizeBytes, setSessionSizeBytes] = useState<number>(0);
@@ -598,25 +600,27 @@ export default function SettingsPanel({ sessionFolder, frameCount, onClose, onOp
           Open Windows Focus assist settings
         </button>
 
-        <div className="settings-panel__test-section">
-          <span className="settings-panel__label">Automated recording test</span>
-          <p className="settings-panel__hint">
-            Records 10 frames per display (monitor, 16:9 region, 9:16 region, then all screens), exports each as 16:9 and 9:16. Writes to main log and detects failures from the log.
-          </p>
-          <button
-            type="button"
-            className="settings-panel__btn settings-panel__btn--primary"
-            disabled={testRunning || displays.length === 0}
-            onClick={() => runRecordingTest()}
-          >
-            {testRunning ? 'Running test…' : 'Run recording test'}
-          </button>
-          {testLogLines.length > 0 && (
-            <pre className="settings-panel__test-log" aria-live="polite">
-              {testLogLines.join('\n')}
-            </pre>
-          )}
-        </div>
+        {showTestUI && (
+          <div className="settings-panel__test-section">
+            <span className="settings-panel__label">Automated recording test</span>
+            <p className="settings-panel__hint">
+              Records 10 frames per display (monitor, 16:9 region, 9:16 region, then all screens), exports each as 16:9 and 9:16. Writes to main log and detects failures from the log.
+            </p>
+            <button
+              type="button"
+              className="settings-panel__btn settings-panel__btn--primary"
+              disabled={testRunning || displays.length === 0}
+              onClick={() => runRecordingTest()}
+            >
+              {testRunning ? 'Running test…' : 'Run recording test'}
+            </button>
+            {testLogLines.length > 0 && (
+              <pre className="settings-panel__test-log" aria-live="polite">
+                {testLogLines.join('\n')}
+              </pre>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

@@ -62,7 +62,7 @@
 }
 
 .export-dialog__hint {
-  font-size: 12px;
+  font-size: 11px;
   color: #94a3b8;
   margin: 0 0 14px;
   line-height: 1.4;
@@ -75,9 +75,19 @@
   margin-bottom: 12px;
 }
 
-.export-dialog__row span:first-child {
+.export-dialog__row span:first-child,
+.export-dialog__label {
   font-size: 12px;
   color: #94a3b8;
+}
+
+.export-dialog__row--check span {
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.export-dialog__row--tight {
+  gap: 4px;
 }
 
 .export-dialog__row input[type="text"],
@@ -197,13 +207,41 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 13px;
+  font-size: 12px;
   color: #e2e8f0;
   cursor: pointer;
 }
 
 .export-dialog__fit-mode-option input {
   accent-color: #3b82f6;
+}
+
+.export-dialog__crop-zoom-row {
+  margin-top: 4px;
+  gap: 4px;
+}
+
+.export-dialog__crop-zoom-row .export-dialog__label {
+  margin-bottom: 0;
+}
+
+.export-dialog__crop-zoom-control {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.export-dialog__crop-zoom-control input[type="range"] {
+  flex: 1;
+  min-width: 0;
+  accent-color: #3b82f6;
+}
+
+.export-dialog__crop-zoom-value {
+  font-size: 12px;
+  color: #e2e8f0;
+  min-width: 2.5em;
+  text-align: right;
 }
 
 .export-dialog__crop-position {
@@ -236,6 +274,23 @@
   display: block;
 }
 
+.export-dialog__crop-position-preview .export-dialog__crop-position-img-wrap {
+  position: absolute;
+  top: 0;
+  left: 0;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.export-dialog__crop-position-preview .export-dialog__crop-position-img-wrap .export-dialog__crop-position-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
 .export-dialog__crop-position-frame {
   position: absolute;
   box-sizing: border-box;
@@ -243,6 +298,25 @@
   background: rgba(59, 130, 246, 0.15);
   pointer-events: auto;
   user-select: none;
+}
+
+.export-dialog__crop-position-preview--zoomed-out {
+  background: #000;
+}
+
+.export-dialog__crop-position-preview--zoomed-out .export-dialog__crop-position-img-wrap {
+  position: absolute;
+  top: 0;
+  left: 0;
+  box-sizing: border-box;
+  overflow: hidden;
+  user-select: none;
+}
+
+.export-dialog__crop-position-preview--zoomed-out .export-dialog__crop-position-img-wrap .export-dialog__crop-position-img {
+  object-fit: fill;
+  display: block;
+  pointer-events: none;
 }
 
 .export-dialog__preview {
@@ -263,6 +337,35 @@
   padding: 0;
   /* width/height set inline from preset so 9:16 is portrait, 16:9 is landscape */
   flex-shrink: 0;
+}
+
+.export-dialog__preview--with-image.export-dialog__preview--zoom {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: #000;
+}
+
+/* When zoom < 1 without crop wrapper: img larger than container (legacy fallback). */
+.export-dialog__preview--with-image.export-dialog__preview--zoom:not(.export-dialog__preview--crop-wrapper) .export-dialog__preview-img {
+  width: calc(100% / var(--preview-zoom, 1));
+  height: calc(100% / var(--preview-zoom, 1));
+  object-fit: contain;
+}
+
+/* Crop wrapper: shows exactly the selected 9:16 region (zoom < 1). */
+.export-dialog__preview-crop-wrapper {
+  position: absolute;
+  inset: auto;
+  overflow: hidden;
+}
+.export-dialog__preview-crop-wrapper .export-dialog__preview-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .export-dialog__preview--with-image .export-dialog__preview-label,

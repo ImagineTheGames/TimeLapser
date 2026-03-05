@@ -33,7 +33,7 @@ interface TimeLapserAPI {
   closeOverlay: () => void;
   getOverlayBoundsAndWorkArea: () => Promise<{ bounds: { x: number; y: number; width: number; height: number }; workArea: { x: number; y: number; width: number; height: number }; panelOnRight?: boolean }>;
   getMainLogContents: (maxLines?: number) => Promise<string>;
-  getStartupFlags: () => Promise<{ runRecordingTest: boolean }>;
+  getStartupFlags: () => Promise<{ runRecordingTest: boolean; showTestUI: boolean }>;
   sendRecordingTestComplete: (payload: { success: boolean; failureReason?: string; logExcerpt?: string }) => Promise<void>;
   startRegionPick: () => Promise<void>;
   onRegionPicked: (callback: (region: { x: number; y: number; width: number; height: number } | null) => void) => () => void;
@@ -62,6 +62,8 @@ interface CaptureSettings {
   lastExportCropToFit?: boolean;
   /** Last export fit mode: letterbox, crop, or stretch. Default stretch. */
   lastExportFitMode?: 'letterbox' | 'crop' | 'stretch';
+  /** Last export crop zoom when fit mode is crop: 1 = fill frame, 0.5–1 = show more content (letterbox). Default 1. */
+  lastExportCropZoom?: number;
   /** Screenshot resolution scale: 1 = 100%, 0.75 = 75%, 0.5 = 50%, 0.25 = 25%. Default 0.5. */
   captureResolutionScale?: number;
 }
@@ -81,6 +83,8 @@ interface ExportVideoArgs {
   /** Crop position when fitMode is crop: 0 = left/top, 0.5 = center, 1 = right/bottom. Default 0.5. */
   cropOffsetX?: number;
   cropOffsetY?: number;
+  /** When fitMode is crop: 1 = fill frame; 0.5–1 = zoom out to show more content (letterbox). Default 1. */
+  cropZoom?: number;
   /** Cap output file size (e.g. 9.9*1024*1024 for Discord). May skip frames if needed. */
   maxFileSizeBytes?: number;
   /** Quality 0–100 (higher = less compression, larger file). Used when no size cap; affects CRF. */
