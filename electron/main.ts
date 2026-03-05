@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, screen, shell, Tray, nativeImage } from 'electron';
 import path from 'path';
 import fs from 'fs';
-import { execSync } from 'child_process';
+import { execSync, spawnSync } from 'child_process';
 import Store from 'electron-store';
 import screenshot from 'screenshot-desktop';
 import sharp from 'sharp';
@@ -1470,6 +1470,33 @@ ipcMain.handle('export-video', async (_e, args: {
     logError('FFmpeg not found: bundled installer missing and not on PATH');
     return { ok: false, message: 'FFmpeg not found. Install from https://ffmpeg.org or run: winget install FFmpeg' };
   }
+  // Get first-frame dimensions the same way FFmpeg will decode them (avoids "Error reinitializing filters" from dimension mismatch)
+  const ffprobePath = path.join(path.dirname(ffmpegPath), process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe');
+  if (fs.existsSync(ffprobePath)) {
+    try {
+      const result = spawnSync(ffprobePath, [
+        '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=p=0',
+        firstFramePath,
+      ], { encoding: 'utf8', windowsHide: true });
+      if (result.status === 0 && result.stdout) {
+        const m = result.stdout.trim().match(/^(\d+),(\d+)$/);
+        if (m) {
+          const w = parseInt(m[1], 10);
+          const h = parseInt(m[2], 10);
+          if (w > 0 && h > 0) {
+            srcW = w;
+            srcH = h;
+            logMinimal('export-video: ffprobe first frame', srcW, 'x', srcH);
+          }
+        }
+      }
+    } catch {
+      // keep Sharp dimensions
+    }
+  }
+  /** Normalized even dimensions; force all frames to this size so filter chain never sees dimension changes. */
+  const normW = srcW > 0 && srcH > 0 ? Math.max(2, srcW - (srcW % 2)) : 0;
+  const normH = srcW > 0 && srcH > 0 ? Math.max(2, srcH - (srcH % 2)) : 0;
   const ffmpeg = require('fluent-ffmpeg');
   ffmpeg.setFfmpegPath(ffmpegPath);
   const firstFrame = firstFramePath;
@@ -1568,28 +1595,36 @@ ipcMain.handle('export-video', async (_e, args: {
       }
       // Only apply fps when not skipping (when skipping, setpts already defines timing; fps would risk dropping frames)
       if (frameStep <= 1) vfParts.push(`fps=${outFps}`);
+      // Normalize all frames to same (even) size so filter chain never sees dimension changes (avoids "Error reinitializing filters")
+      if (normW > 0 && normH > 0) vfParts.push(`scale=${normW}:${normH}:flags=lanczos`);
       const gifFitMode = fitMode ?? (cropToFit ? 'crop' : 'letterbox');
       if (gifFitMode === 'stretch') {
         vfParts.push(`scale=${outW}:${outH}:flags=lanczos`);
       } else if (gifFitMode === 'crop') {
         const zoom = Math.max(0.5, Math.min(1, cropZoom));
-        if (srcW > 0 && srcH > 0) {
-          const scaleCover = Math.max(outW / srcW, outH / srcH);
-          const scaleContain = Math.min(outW / srcW, outH / srcH);
+        if (normW > 0 && normH > 0) {
+          const scaleCover = Math.max(outW / normW, outH / normH);
+          const scaleContain = Math.min(outW / normW, outH / normH);
           const t = (zoom - 0.5) / 0.5;
           const effectiveScale = scaleContain + (scaleCover - scaleContain) * t;
-          const contentW = Math.max(1, Math.round(srcW * effectiveScale));
-          const contentH = Math.max(1, Math.round(srcH * effectiveScale));
+          let contentW = Math.max(2, Math.round(normW * effectiveScale));
+          let contentH = Math.max(2, Math.round(normH * effectiveScale));
+          contentW -= contentW % 2;
+          contentH -= contentH % 2;
+          if (contentW < 2) contentW = 2;
+          if (contentH < 2) contentH = 2;
           if (contentW >= outW && contentH >= outH) {
             let cropX = Math.round((contentW - outW) * cropOffsetX);
             let cropY = Math.round((contentH - outH) * cropOffsetY);
             cropX = Math.max(0, Math.min(contentW - outW, cropX));
             cropY = Math.max(0, Math.min(contentH - outH, cropY));
             vfParts.push(`scale=${contentW}:${contentH}:flags=lanczos`, `crop=${outW}:${outH}:${cropX}:${cropY}`);
-          } else {
+          } else if (contentW <= outW && contentH <= outH) {
             const padX = Math.max(0, Math.round((outW - contentW) / 2));
             const padY = Math.max(0, Math.round((outH - contentH) / 2));
             vfParts.push(`scale=${contentW}:${contentH}:flags=lanczos`, `pad=${outW}:${outH}:${padX}:${padY}:black`);
+          } else {
+            vfParts.push(`scale=${outW}:${outH}:force_original_aspect_ratio=increase`, `crop=${outW}:${outH}`);
           }
         } else {
           vfParts.push(`scale=${outW}:${outH}:force_original_aspect_ratio=increase`, `crop=${outW}:${outH}`);
@@ -1675,8 +1710,27 @@ ipcMain.handle('export-video', async (_e, args: {
   };
 
   return new Promise((resolve) => {
+    // Concat list for video: same as GIF, so FFmpeg gets one explicit file per frame (avoids image2 pattern dimension quirks)
+    const videoConcatPath = path.join(sessionFolder, `.timelapser_video_concat_${Date.now()}.txt`);
+    let videoConcatCreated = false;
+    try {
+      const listContent = frames.map((f) => {
+        const fullPath = path.join(sessionFolder, f).replace(/\\/g, '/');
+        const escaped = fullPath.replace(/'/g, "'\\''");
+        return `file '${escaped}'`;
+      }).join('\n');
+      fs.writeFileSync(videoConcatPath, listContent, 'utf8');
+      videoConcatCreated = true;
+    } catch (e) {
+      return void resolve({ ok: false, message: (e as Error).message });
+    }
+    const cleanupVideoConcat = () => { try { if (videoConcatCreated) fs.unlinkSync(videoConcatPath); } catch { /* ignore */ } };
+
     const runVideoOnly = (dest: string, onDone: (err: Error | null) => void) => {
       const vfParts: string[] = [];
+      // Normalize first so every filter downstream sees the same dimensions (avoids "Error reinitializing filters")
+      if (normW > 0 && normH > 0) vfParts.push(`scale=${normW}:${normH}`);
+      vfParts.push(`fps=${fps}`);
       if (frameStep > 1) {
         vfParts.push(`select='not(mod(n\\,${frameStep}))'`, `setpts=N/(${fps}*${frameStep})/TB`);
       }
@@ -1685,14 +1739,18 @@ ipcMain.handle('export-video', async (_e, args: {
         vfParts.push(`scale=${width}:${height}`);
       } else if (mode === 'crop') {
         const zoom = Math.max(0.5, Math.min(1, cropZoom));
-        logMinimal('export-video: crop branch zoom=', zoom, 'src=', srcW, 'x', srcH);
-        if (srcW > 0 && srcH > 0) {
-          const scaleCover = Math.max(width / srcW, height / srcH);
-          const scaleContain = Math.min(width / srcW, height / srcH);
+        logMinimal('export-video: crop branch zoom=', zoom, 'norm=', normW, 'x', normH);
+        if (normW > 0 && normH > 0) {
+          const scaleCover = Math.max(width / normW, height / normH);
+          const scaleContain = Math.min(width / normW, height / normH);
           const t = (zoom - 0.5) / 0.5;
           const effectiveScale = scaleContain + (scaleCover - scaleContain) * t;
-          const contentW = Math.max(1, Math.round(srcW * effectiveScale));
-          const contentH = Math.max(1, Math.round(srcH * effectiveScale));
+          let contentW = Math.max(2, Math.round(normW * effectiveScale));
+          let contentH = Math.max(2, Math.round(normH * effectiveScale));
+          contentW -= contentW % 2;
+          contentH -= contentH % 2;
+          if (contentW < 2) contentW = 2;
+          if (contentH < 2) contentH = 2;
           logMinimal('export-video: zoom scale cover=', scaleCover, 'contain=', scaleContain, 't=', t, 'effective=', effectiveScale, 'content=', contentW, 'x', contentH);
           if (contentW >= width && contentH >= height) {
             let cropX = Math.round((contentW - width) * cropOffsetX);
@@ -1701,11 +1759,15 @@ ipcMain.handle('export-video', async (_e, args: {
             cropY = Math.max(0, Math.min(contentH - height, cropY));
             vfParts.push(`scale=${contentW}:${contentH}`, `crop=${width}:${height}:${cropX}:${cropY}`);
             logMinimal('export-video: zoom filter scale', contentW, contentH, 'crop', width, height, cropX, cropY);
-          } else {
+          } else if (contentW <= width && contentH <= height) {
             const padX = Math.max(0, Math.round((width - contentW) / 2));
             const padY = Math.max(0, Math.round((height - contentH) / 2));
             vfParts.push(`scale=${contentW}:${contentH}`, `pad=${width}:${height}:${padX}:${padY}:black`);
             logMinimal('export-video: zoom filter scale', contentW, contentH, 'pad', width, height, padX, padY);
+          } else {
+            // Mixed: one dimension > output, one < output -> scale to cover and crop
+            vfParts.push(`scale=${width}:${height}:force_original_aspect_ratio=increase`, `crop=${width}:${height}`);
+            logMinimal('export-video: zoom filter mixed -> cover+crop');
           }
         } else {
           vfParts.push(`scale=${width}:${height}:force_original_aspect_ratio=increase`, `crop=${width}:${height}`);
@@ -1720,20 +1782,22 @@ ipcMain.handle('export-video', async (_e, args: {
         const baseChain = vfParts.join(',');
         const filterComplex = `[0:v]${baseChain}[v];[1:v]scale=200:-1[wm];[v][wm]${overlayPosExpr()}[out]`;
         const chain = ffmpeg()
-          .input(pattern)
-          .inputOptions([`-start_number ${startNumber}`, `-framerate ${fps}`])
+          .input(videoConcatPath)
+          .inputOptions(['-f', 'concat', '-safe', '0'])
           .input(watermarkPath!)
           .complexFilter(filterComplex, 'out')
           .outputOptions(videoOpts)
           .output(dest)
-          .on('end', () => onDone(null))
-          .on('error', onDone);
+          .on('end', () => { cleanupVideoConcat(); onDone(null); })
+          .on('error', (e: Error) => { cleanupVideoConcat(); onDone(e); });
         chain.run();
       } else {
         const chain = ffmpeg()
-          .input(pattern)
-          .inputOptions([`-start_number ${startNumber}`, `-framerate ${fps}`]);
-        chain.outputOptions(videoOpts).output(dest).on('end', () => onDone(null)).on('error', onDone);
+          .input(videoConcatPath)
+          .inputOptions(['-f', 'concat', '-safe', '0']);
+        chain.outputOptions(videoOpts).output(dest)
+          .on('end', () => { cleanupVideoConcat(); onDone(null); })
+          .on('error', (e: Error) => { cleanupVideoConcat(); onDone(e); });
         if (vfParts.length > 0) {
           chain.outputOptions(['-vf', vfParts.join(',')]);
         } else {
