@@ -1402,7 +1402,11 @@ ipcMain.handle('export-video', async (_e, args: {
     watermarkPath = null,
     watermarkPosition = 'bottom-right',
   } = args;
-  logMinimal('export-video: cropZoom', cropZoom, 'fitMode', fitMode);
+  // Resolve effective fit mode: when user chose crop (cropToFit or fitMode 'crop'), always use crop so 9:16 export matches preview
+  const effectiveFitMode = (fitMode === 'crop' || cropToFit === true)
+    ? 'crop'
+    : (fitMode === 'stretch' ? 'stretch' : 'letterbox');
+  logMinimal('export-video: cropZoom', cropZoom, 'fitMode', fitMode, 'effectiveFitMode', effectiveFitMode);
   const hasWatermark = !!(watermarkPath && fs.existsSync(watermarkPath));
   const isGif = format === 'gif';
   /** Map quality 0–100 to CRF (100 = best quality/low CRF, 0 = high compression/high CRF). */
@@ -1597,7 +1601,7 @@ ipcMain.handle('export-video', async (_e, args: {
       if (frameStep <= 1) vfParts.push(`fps=${outFps}`);
       // Normalize all frames to same (even) size so filter chain never sees dimension changes (avoids "Error reinitializing filters")
       if (normW > 0 && normH > 0) vfParts.push(`scale=${normW}:${normH}:flags=lanczos`);
-      const gifFitMode = fitMode ?? (cropToFit ? 'crop' : 'letterbox');
+      const gifFitMode = effectiveFitMode;
       if (gifFitMode === 'stretch') {
         vfParts.push(`scale=${outW}:${outH}:flags=lanczos`);
       } else if (gifFitMode === 'crop') {
@@ -1730,11 +1734,11 @@ ipcMain.handle('export-video', async (_e, args: {
       const vfParts: string[] = [];
       // Normalize first so every filter downstream sees the same dimensions (avoids "Error reinitializing filters")
       if (normW > 0 && normH > 0) vfParts.push(`scale=${normW}:${normH}`);
-      vfParts.push(`fps=${fps}`);
+      vfParts.push(`fps=${outFps}`);
       if (frameStep > 1) {
-        vfParts.push(`select='not(mod(n\\,${frameStep}))'`, `setpts=N/(${fps}*${frameStep})/TB`);
+        vfParts.push(`select='not(mod(n\\,${frameStep}))'`, `setpts=N/(${outFps}*${frameStep})/TB`);
       }
-      const mode = fitMode ?? (cropToFit ? 'crop' : 'letterbox');
+      const mode = effectiveFitMode;
       if (mode === 'stretch') {
         vfParts.push(`scale=${width}:${height}`);
       } else if (mode === 'crop') {
@@ -1764,10 +1768,21 @@ ipcMain.handle('export-video', async (_e, args: {
             const padY = Math.max(0, Math.round((height - contentH) / 2));
             vfParts.push(`scale=${contentW}:${contentH}`, `pad=${width}:${height}:${padX}:${padY}:black`);
             logMinimal('export-video: zoom filter scale', contentW, contentH, 'pad', width, height, padX, padY);
+          } else if (contentW >= width && contentH < height) {
+            // Mixed: width fits, height needs pad then crop width (e.g. 9:16 from landscape)
+            const padY = Math.max(0, Math.min(height - contentH, Math.round((height - contentH) * cropOffsetY)));
+            const cropX = Math.max(0, Math.min(contentW - width, Math.round((contentW - width) * cropOffsetX)));
+            vfParts.push(`scale=${contentW}:${contentH}`, `pad=${contentW}:${height}:0:${padY}:black`, `crop=${width}:${height}:${cropX}:0`);
+            logMinimal('export-video: zoom filter mixed (pad H)', contentW, contentH, 'padY', padY, 'cropX', cropX);
+          } else if (contentW < width && contentH >= height) {
+            // Mixed: height fits, width needs pad then crop height
+            const padX = Math.max(0, Math.min(width - contentW, Math.round((width - contentW) * cropOffsetX)));
+            const cropY = Math.max(0, Math.min(contentH - height, Math.round((contentH - height) * cropOffsetY)));
+            vfParts.push(`scale=${contentW}:${contentH}`, `pad=${width}:${contentH}:${padX}:0:black`, `crop=${width}:${height}:0:${cropY}`);
+            logMinimal('export-video: zoom filter mixed (pad W)', contentW, contentH, 'padX', padX, 'cropY', cropY);
           } else {
-            // Mixed: one dimension > output, one < output -> scale to cover and crop
             vfParts.push(`scale=${width}:${height}:force_original_aspect_ratio=increase`, `crop=${width}:${height}`);
-            logMinimal('export-video: zoom filter mixed -> cover+crop');
+            logMinimal('export-video: zoom filter mixed -> cover+crop fallback');
           }
         } else {
           vfParts.push(`scale=${width}:${height}:force_original_aspect_ratio=increase`, `crop=${width}:${height}`);
@@ -1778,8 +1793,8 @@ ipcMain.handle('export-video', async (_e, args: {
       if (holdLastSec > 0) {
         vfParts.push(`tpad=stop_mode=clone:stop_duration=${holdLastSec}`);
       }
+      const baseChain = vfParts.join(',');
       if (hasWatermark) {
-        const baseChain = vfParts.join(',');
         const filterComplex = `[0:v]${baseChain}[v];[1:v]scale=200:-1[wm];[v][wm]${overlayPosExpr()}[out]`;
         const chain = ffmpeg()
           .input(videoConcatPath)
@@ -1792,15 +1807,21 @@ ipcMain.handle('export-video', async (_e, args: {
           .on('error', (e: Error) => { cleanupVideoConcat(); onDone(e); });
         chain.run();
       } else {
+        // Use filter_complex so crop/scale is applied reliably (same as watermark path); -vf with concat can be flaky
         const chain = ffmpeg()
           .input(videoConcatPath)
           .inputOptions(['-f', 'concat', '-safe', '0']);
-        chain.outputOptions(videoOpts).output(dest)
-          .on('end', () => { cleanupVideoConcat(); onDone(null); })
-          .on('error', (e: Error) => { cleanupVideoConcat(); onDone(e); });
-        if (vfParts.length > 0) {
-          chain.outputOptions(['-vf', vfParts.join(',')]);
+        if (baseChain) {
+          const filterComplex = `[0:v]${baseChain}[v]`;
+          chain.complexFilter(filterComplex, 'v')
+            .outputOptions(videoOpts)
+            .output(dest)
+            .on('end', () => { cleanupVideoConcat(); onDone(null); })
+            .on('error', (e: Error) => { cleanupVideoConcat(); onDone(e); });
         } else {
+          chain.outputOptions(videoOpts).output(dest)
+            .on('end', () => { cleanupVideoConcat(); onDone(null); })
+            .on('error', (e: Error) => { cleanupVideoConcat(); onDone(e); });
           chain.size(`${width}x${height}`);
         }
         chain.run();

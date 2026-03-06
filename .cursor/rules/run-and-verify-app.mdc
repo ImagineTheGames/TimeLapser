@@ -8,6 +8,10 @@ globs: ["**/*"]
 
 **You must always do this after any change to Electron main, preload, React, or config. No exceptions.**
 
+## Version bump (mandatory when making a change)
+
+**Always bump the version** when you make a code or config change. In `package.json`, increment the version (e.g. `1.0.30` → `1.0.31`). Do this as part of the same task; do not leave the project at the same version after modifying it.
+
 ## Rule: Kill → Build → Start → Verify
 
 1. **Kill** any running Electron/TimeLapser process.
