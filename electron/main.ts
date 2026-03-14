@@ -754,7 +754,7 @@ function startNewSession(): string {
 function runCaptureLoop() {
   if (captureState !== 'recording' || !currentSessionFolder) return;
   const isFirstFrame = frameIndex === 0;
-  const intervalSec = Math.max(0.1, settings.intervalSeconds ?? 1);
+  const intervalSec = Math.max(0.01, settings.intervalSeconds ?? 1);
   if (isFirstFrame) {
     log('Capture loop: first frame scheduled', { intervalSeconds: intervalSec });
   }
@@ -786,7 +786,7 @@ function runCaptureLoop() {
     })
     .finally(() => {
       if (captureState === 'recording') {
-        const intervalSec = Math.max(0.1, settings.intervalSeconds ?? 1);
+        const intervalSec = Math.max(0.01, settings.intervalSeconds ?? 1);
         captureTimer = setTimeout(runCaptureLoop, intervalSec * 1000);
       }
     });
@@ -1061,7 +1061,7 @@ ipcMain.handle('set-continue-session', (_e, path: string | null) => {
 });
 ipcMain.handle('set-settings', (_e, s: Partial<CaptureSettings>) => {
   const next = { ...getSettings(), ...s };
-  if (typeof next.intervalSeconds === 'number' && next.intervalSeconds < 0.1) next.intervalSeconds = 0.1;
+  if (typeof next.intervalSeconds === 'number' && next.intervalSeconds < 0.01) next.intervalSeconds = 0.01;
   saveSettings(next);
   if (overlayWindow && !overlayWindow.isDestroyed() && typeof next.overlayOpacity === 'number') {
     const opacity = Math.max(0.1, Math.min(1, next.overlayOpacity));
@@ -1368,6 +1368,8 @@ ipcMain.handle('export-video', async (_e, args: {
   /** When fitMode is crop: 1 = fill frame (crop overflow); 0.5–1 = zoom out to show more content (letterbox). Default 1. */
   cropZoom?: number;
   maxFileSizeBytes?: number;
+  /** When true and maxFileSizeBytes set: use all frames and choose FPS to maximize duration under limit (aim ~0.1 MB under). Trial exports until just under. */
+  maximizeDurationUnderLimit?: boolean;
   audioPath?: string | null;
   fadeInSeconds?: number;
   fadeOutSeconds?: number;
@@ -1385,6 +1387,7 @@ ipcMain.handle('export-video', async (_e, args: {
     : typeof cropZoomRaw === 'string'
       ? Math.max(0.5, Math.min(1, parseFloat(cropZoomRaw) || 1))
       : 1;
+  const maximizeDurationUnderLimit = !!(a.maximizeDurationUnderLimit === true || a.maximizeDurationUnderLimit === 1 || String(a.maximizeDurationUnderLimit).toLowerCase() === 'true');
   const {
     sessionFolder, outputPath, maxDurationSeconds, fps, width, height,
     cropToFit = false,
@@ -1407,6 +1410,9 @@ ipcMain.handle('export-video', async (_e, args: {
     ? 'crop'
     : (fitMode === 'stretch' ? 'stretch' : 'letterbox');
   logMinimal('export-video: cropZoom', cropZoom, 'fitMode', fitMode, 'effectiveFitMode', effectiveFitMode);
+  if (maxFileSizeBytes && maxFileSizeBytes > 0) {
+    logMinimal('export-video: maxFileSizeBytes', maxFileSizeBytes, 'maximizeDurationUnderLimit', maximizeDurationUnderLimit);
+  }
   const hasWatermark = !!(watermarkPath && fs.existsSync(watermarkPath));
   const isGif = format === 'gif';
   /** Map quality 0–100 to CRF (100 = best quality/low CRF, 0 = high compression/high CRF). */
@@ -1512,12 +1518,16 @@ ipcMain.handle('export-video', async (_e, args: {
     outFps = frames.length / maxDurationSeconds;
   }
   let videoDurationSec = frames.length / outFps;
-  const holdLastSec = duplicateLastFrameCount > 0 ? duplicateLastFrameCount / outFps : 0;
+  let holdLastSec = duplicateLastFrameCount > 0 ? duplicateLastFrameCount / outFps : 0;
   let frameStep = 1;
   if (isGif && gifMaxFrames > 0 && frames.length > gifMaxFrames) {
     frameStep = Math.max(1, Math.ceil(frames.length / gifMaxFrames));
   }
-  if (!isGif && maxFileSizeBytes && maxFileSizeBytes > 0) {
+  if (maximizeDurationUnderLimit && maxFileSizeBytes && maxFileSizeBytes > 0 && !isGif) {
+    frameStep = 1;
+    videoDurationSec = frames.length / outFps;
+    logMinimal('export-video: maximize-length outFps=', outFps, 'durationSec=', videoDurationSec, 'frames=', frames.length);
+  } else if (!isGif && maxFileSizeBytes && maxFileSizeBytes > 0) {
     const targetVideoBytes = maxFileSizeBytes * 0.9;
     let targetKbps = Math.round((targetVideoBytes * 8) / videoDurationSec / 1000);
     if (targetKbps < 400) {
@@ -1677,14 +1687,19 @@ ipcMain.handle('export-video', async (_e, args: {
       }
     });
   }
-  const effectiveDurationSec = frameStep > 1 ? (frames.length / frameStep) / outFps : videoDurationSec;
+  let effectiveDurationSec = frameStep > 1 ? (frames.length / frameStep) / outFps : videoDurationSec;
   const crfVp9 = crfFromQuality(quality, true);
   const crfH264 = crfFromQuality(quality, false);
   let videoOpts: string[];
   if (maxFileSizeBytes && maxFileSizeBytes > 0) {
     const targetVideoBytes = maxFileSizeBytes * 0.9;
     const targetKbps = Math.max(300, Math.min(20000, Math.round((targetVideoBytes * 8) / effectiveDurationSec / 1000)));
-    if (ext === 'webm') {
+    if (maximizeDurationUnderLimit) {
+      const startCrf = 23;
+      videoOpts = ext === 'webm'
+        ? [`-r ${outFps}`, '-c:v libvpx-vp9', '-pix_fmt yuv420p', '-b:v 0', `-crf ${startCrf}`]
+        : [`-r ${outFps}`, '-c:v libx264', '-pix_fmt yuv420p', '-movflags +faststart', `-crf ${startCrf}`];
+    } else if (ext === 'webm') {
       videoOpts = [`-r ${outFps}`, '-c:v libvpx-vp9', '-pix_fmt yuv420p', `-b:v ${targetKbps}k`, `-crf ${Math.min(crfVp9, 35)}`];
     } else {
       videoOpts = [`-r ${outFps}`, '-c:v libx264', '-pix_fmt yuv420p', '-movflags +faststart', `-b:v ${targetKbps}k`, `-maxrate ${targetKbps}k`, `-bufsize ${Math.min(2 * targetKbps, 40000)}k`];
@@ -1730,6 +1745,7 @@ ipcMain.handle('export-video', async (_e, args: {
     }
     const cleanupVideoConcat = () => { try { if (videoConcatCreated) fs.unlinkSync(videoConcatPath); } catch { /* ignore */ } };
 
+    let skipConcatCleanup = false;
     const runVideoOnly = (dest: string, onDone: (err: Error | null) => void) => {
       const vfParts: string[] = [];
       // Normalize first so every filter downstream sees the same dimensions (avoids "Error reinitializing filters")
@@ -1794,34 +1810,37 @@ ipcMain.handle('export-video', async (_e, args: {
         vfParts.push(`tpad=stop_mode=clone:stop_duration=${holdLastSec}`);
       }
       const baseChain = vfParts.join(',');
+      const concatInputOpts = maximizeDurationUnderLimit
+        ? ['-f', 'concat', '-safe', '0', '-r', String(outFps)]
+        : ['-f', 'concat', '-safe', '0'];
       if (hasWatermark) {
         const filterComplex = `[0:v]${baseChain}[v];[1:v]scale=200:-1[wm];[v][wm]${overlayPosExpr()}[out]`;
         const chain = ffmpeg()
           .input(videoConcatPath)
-          .inputOptions(['-f', 'concat', '-safe', '0'])
+          .inputOptions(concatInputOpts)
           .input(watermarkPath!)
           .complexFilter(filterComplex, 'out')
           .outputOptions(videoOpts)
           .output(dest)
-          .on('end', () => { cleanupVideoConcat(); onDone(null); })
-          .on('error', (e: Error) => { cleanupVideoConcat(); onDone(e); });
+          .on('end', () => { if (!skipConcatCleanup) cleanupVideoConcat(); onDone(null); })
+          .on('error', (e: Error) => { if (!skipConcatCleanup) cleanupVideoConcat(); onDone(e); });
         chain.run();
       } else {
         // Use filter_complex so crop/scale is applied reliably (same as watermark path); -vf with concat can be flaky
         const chain = ffmpeg()
           .input(videoConcatPath)
-          .inputOptions(['-f', 'concat', '-safe', '0']);
+          .inputOptions(concatInputOpts);
         if (baseChain) {
           const filterComplex = `[0:v]${baseChain}[v]`;
           chain.complexFilter(filterComplex, 'v')
             .outputOptions(videoOpts)
             .output(dest)
-            .on('end', () => { cleanupVideoConcat(); onDone(null); })
-            .on('error', (e: Error) => { cleanupVideoConcat(); onDone(e); });
+            .on('end', () => { if (!skipConcatCleanup) cleanupVideoConcat(); onDone(null); })
+            .on('error', (e: Error) => { if (!skipConcatCleanup) cleanupVideoConcat(); onDone(e); });
         } else {
           chain.outputOptions(videoOpts).output(dest)
-            .on('end', () => { cleanupVideoConcat(); onDone(null); })
-            .on('error', (e: Error) => { cleanupVideoConcat(); onDone(e); });
+            .on('end', () => { if (!skipConcatCleanup) cleanupVideoConcat(); onDone(null); })
+            .on('error', (e: Error) => { if (!skipConcatCleanup) cleanupVideoConcat(); onDone(e); });
           chain.size(`${width}x${height}`);
         }
         chain.run();
@@ -1829,10 +1848,87 @@ ipcMain.handle('export-video', async (_e, args: {
     };
 
     if (!hasAudio) {
-      runVideoOnly(destPath, (err) => {
-        if (err) resolve({ ok: false, message: (err as Error).message });
-        else resolve({ ok: true, path: destPath });
-      });
+      const useTrialLoop = maximizeDurationUnderLimit && maxFileSizeBytes && maxFileSizeBytes > 0;
+      const destToUse = useTrialLoop
+        ? path.join(path.dirname(destPath), `.timelapser_maxlen_${Date.now()}${path.extname(destPath)}`)
+        : destPath;
+      const targetBytesForTrial = useTrialLoop
+        ? Math.max(1, maxFileSizeBytes - 0.1 * 1024 * 1024)
+        : 0;
+      if (useTrialLoop) {
+        skipConcatCleanup = true;
+        logMinimal('export-video: maximize-length CRF search enabled, targetBytesMB', (targetBytesForTrial / (1024 * 1024)).toFixed(2));
+      }
+      let attempt = 0;
+      const maxAttempts = 8;
+      const lowerBand = 0.80;
+      let crfLow = 0;
+      let crfHigh = 51;
+      let crfCurrent = 23;
+      let bestUnderPath: string | null = null;
+      let bestUnderSize = 0;
+      const finishTrialLoop = (result: { ok: boolean; path?: string; message?: string }) => {
+        cleanupVideoConcat();
+        resolve(result);
+      };
+      const acceptFile = (src: string) => {
+        if (src !== destPath) {
+          try { fs.renameSync(src, destPath); } catch (e) { finishTrialLoop({ ok: false, message: (e as Error).message }); return; }
+        }
+        if (bestUnderPath && bestUnderPath !== src) try { fs.unlinkSync(bestUnderPath); } catch { /* ignore */ }
+        finishTrialLoop({ ok: true, path: destPath });
+      };
+      const onVideoDone = (err: Error | null) => {
+        if (err) {
+          if (bestUnderPath) { acceptFile(bestUnderPath); return; }
+          if (destToUse !== destPath) try { fs.unlinkSync(destToUse); } catch { /* ignore */ }
+          finishTrialLoop({ ok: false, message: err.message });
+          return;
+        }
+        if (!useTrialLoop || targetBytesForTrial <= 0) {
+          acceptFile(destToUse);
+          return;
+        }
+        const size = fs.statSync(destToUse).size;
+        const sizeMb = (size / (1024 * 1024)).toFixed(2);
+        const targetMb = (targetBytesForTrial / (1024 * 1024)).toFixed(2);
+        logMinimal('export-video: maximize-length attempt', attempt + 1, 'crf', crfCurrent, 'sizeMB', sizeMb, 'targetMB', targetMb);
+
+        if (size <= targetBytesForTrial && size > bestUnderSize) {
+          if (bestUnderPath) try { fs.unlinkSync(bestUnderPath); } catch { /* ignore */ }
+          bestUnderPath = destToUse + `.best${attempt}`;
+          try { fs.renameSync(destToUse, bestUnderPath); } catch { /* ignore */ }
+          bestUnderSize = size;
+        }
+
+        const ratio = size / targetBytesForTrial;
+        if (size <= targetBytesForTrial && ratio >= lowerBand) {
+          logMinimal('export-video: maximize-length converged at attempt', attempt + 1, 'crf', crfCurrent);
+          acceptFile(bestUnderPath || destToUse);
+          return;
+        }
+        if (attempt >= maxAttempts - 1 || (crfHigh - crfLow) < 1) {
+          logMinimal('export-video: maximize-length search done, attempts', attempt + 1, 'crfRange', crfLow, '-', crfHigh);
+          if (bestUnderPath) { acceptFile(bestUnderPath); return; }
+          acceptFile(destToUse);
+          return;
+        }
+        attempt++;
+        try { fs.unlinkSync(destToUse); } catch { /* ignore */ }
+
+        if (size > targetBytesForTrial) {
+          crfLow = crfCurrent;
+        } else {
+          crfHigh = crfCurrent;
+        }
+        crfCurrent = Math.round((crfLow + crfHigh) / 2);
+        videoOpts = ext === 'webm'
+          ? [`-r ${outFps}`, '-c:v libvpx-vp9', '-pix_fmt yuv420p', '-b:v 0', `-crf ${crfCurrent}`]
+          : [`-r ${outFps}`, '-c:v libx264', '-pix_fmt yuv420p', '-movflags +faststart', `-crf ${crfCurrent}`];
+        logMinimal('export-video: maximize-length retry', attempt, 'newCrf', crfCurrent, 'range', crfLow, '-', crfHigh);
+        runVideoOnly(destToUse, onVideoDone);
+      };
+      runVideoOnly(destToUse, onVideoDone);
       return;
     }
 

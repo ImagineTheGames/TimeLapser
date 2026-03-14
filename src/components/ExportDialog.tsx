@@ -74,6 +74,7 @@ const DEFAULT_TARGET_OPTIONS = {
   cropZoom: 1,
   quality: 70,
   maxFileSizeMb: null as number | null,
+  maximizeDurationUnderLimit: false,
 };
 
 const DEFAULT_EXPORT_PLATFORM_ID = 'youtube_standard';
@@ -109,8 +110,11 @@ export interface ExportTarget {
   cropZoom?: number;
   quality?: number;
   maxFileSizeMb?: number | null;
+  /** When true and max file size set: maximize video length under the limit (trial until ~0.1 MB under). */
+  maximizeDurationUnderLimit?: boolean;
   /** Hold last frame: number of additional frames to duplicate at the end. 0 = off. */
   duplicateLastFrameCount?: number;
+  maximizeDurationUnderLimit?: boolean;
   /** GIF / LinkedIn: max frames (LinkedIn allows 500). 0 = no limit. */
   gifMaxFrames?: number;
   /** When true, show simple sliders for GIF/LinkedIn GIF (target size, frames, resolution, FPS). */
@@ -530,6 +534,7 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
       cropZoom: last?.cropZoom ?? DEFAULT_TARGET_OPTIONS.cropZoom,
       quality: last?.quality ?? DEFAULT_TARGET_OPTIONS.quality,
       maxFileSizeMb: last?.maxFileSizeMb ?? DEFAULT_TARGET_OPTIONS.maxFileSizeMb,
+      maximizeDurationUnderLimit: last?.maximizeDurationUnderLimit ?? false,
       duplicateLastFrameCount: last?.duplicateLastFrameCount ?? 0,
     };
     setTargets([...targets, newTarget]);
@@ -564,6 +569,7 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
         cropZoom: prev.cropZoom ?? DEFAULT_TARGET_OPTIONS.cropZoom,
         quality: prev.quality ?? DEFAULT_TARGET_OPTIONS.quality,
         maxFileSizeMb: prev.maxFileSizeMb ?? DEFAULT_TARGET_OPTIONS.maxFileSizeMb,
+        maximizeDurationUnderLimit: prev.maximizeDurationUnderLimit ?? false,
         duplicateLastFrameCount: prev.duplicateLastFrameCount ?? 0,
         outputPath: newPath,
       };
@@ -682,12 +688,13 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
       const quality = t.quality ?? DEFAULT_TARGET_OPTIONS.quality;
       const maxFileSizeMb = t.maxFileSizeMb ?? DEFAULT_TARGET_OPTIONS.maxFileSizeMb;
       const cropZoomNum = typeof t.cropZoom === 'number' && t.cropZoom >= 0.5 && t.cropZoom <= 1 ? t.cropZoom : 1;
+      const useMaximizeLength = !!(t.maximizeDurationUnderLimit ?? false) && format !== 'gif' && (maxFileSizeMb != null && maxFileSizeMb > 0);
       const result = await window.timelapser.exportVideo({
         sessionFolder: selectedSessionFolder,
         outputPath: finalPath,
         platform: t.platformId,
         format,
-        maxDurationSeconds: speedToFit ? p.maxDurationSeconds : 0,
+        maxDurationSeconds: useMaximizeLength ? 0 : (speedToFit ? p.maxDurationSeconds : 0),
         fps: effFps,
         width: p.width,
         height: p.height,
@@ -697,6 +704,7 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
         cropOffsetY: t.cropOffsetY ?? 0.5,
         cropZoom: cropZoomNum,
         maxFileSizeBytes: maxFileSizeMb != null && maxFileSizeMb > 0 ? Math.round(maxFileSizeMb * 1024 * 1024) : undefined,
+        maximizeDurationUnderLimit: useMaximizeLength,
         quality: format === 'gif' ? (t.gifQuality ?? 70) : quality,
         audioPath: format === 'gif' ? null : (audioPath || null),
         fadeInSeconds: format === 'gif' ? 0 : fadeInSeconds,
@@ -1119,7 +1127,7 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
                             </label>
                           </div>
                           <div className="export-dialog__row">
-                            <span>FPS</span>
+                            <span>Playback FPS</span>
                             <div className="export-dialog__slider-row">
                               <input
                                 type="range"
@@ -1189,7 +1197,7 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
                             </div>
                           </div>
                           <label className="export-dialog__row">
-                            <span>FPS</span>
+                            <span>Playback FPS</span>
                             <input
                               type="number"
                               min={1}
@@ -1235,7 +1243,7 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
                           <p className="export-dialog__gif-result-title">Result preview</p>
                           <ul className="export-dialog__gif-result-list">
                             <li>Output frames: <strong>{gifOut.numFrames.toLocaleString()}</strong></li>
-                            <li>Output FPS: <strong>{gifOut.outFps}</strong></li>
+                            <li>Playback FPS: <strong>{gifOut.outFps}</strong></li>
                             <li>Resolution: <strong>{gifOut.outW}×{gifOut.outH}</strong></li>
                             <li>Duration: <strong>~{gifOut.durationSec.toFixed(1)}s</strong></li>
                             <li>Est. file size: <strong>~{gifOut.estimatedSizeMb < 1 ? gifOut.estimatedSizeMb.toFixed(2) : gifOut.estimatedSizeMb.toFixed(1)} MB</strong></li>
@@ -1287,7 +1295,7 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
                         </>
                       )}
                       <label className="export-dialog__row export-dialog__row--small">
-                        <span>FPS</span>
+                        <span>Playback FPS</span>
                         <input
                           type="number"
                           min={1}
@@ -1309,7 +1317,7 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
                   )}
                   {!isGifOrLinkedInGif && (t.platformId !== CUSTOM_PRESET_ID) && (
                     <label className="export-dialog__row">
-                      <span>Output FPS</span>
+                      <span>Playback FPS</span>
                       <input
                         type="number"
                         min={1}
@@ -1376,6 +1384,23 @@ export default function ExportDialog({ sessionFolder: initialSessionFolder, onCl
                           <option value="100">100 MB</option>
                         </select>
                       </div>
+                      {(t.maxFileSizeMb ?? DEFAULT_TARGET_OPTIONS.maxFileSizeMb) != null && (t.maxFileSizeMb ?? DEFAULT_TARGET_OPTIONS.maxFileSizeMb)! > 0 && (
+                        <>
+                          <label className="export-dialog__row export-dialog__row--check">
+                            <input
+                              type="checkbox"
+                              checked={t.maximizeDurationUnderLimit ?? false}
+                              onChange={(e) => updateTarget(i, { maximizeDurationUnderLimit: e.target.checked })}
+                            />
+                            <span>Maximize length under limit (trial until ~0.1 MB under)</span>
+                          </label>
+                          {(t.maximizeDurationUnderLimit ?? false) && (
+                            <p className="export-dialog__hint-inline" style={{ marginTop: 0 }}>
+                              Multiple passes run until file is under the limit. Folder opens when complete. Not used when audio is added.
+                            </p>
+                          )}
+                        </>
+                      )}
                     </>
                   )}
                   <label className="export-dialog__row">

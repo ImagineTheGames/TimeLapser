@@ -70,5 +70,6 @@ jobs:
           name: Release ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name || github.ref_name }}
           body_path: release-notes/${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name || github.ref_name }}.md
           generate_release_notes: false
+          prerelease: ${{ (github.event_name == 'workflow_dispatch' && contains(github.event.inputs.tag_name, 'nightly')) || (github.event_name == 'push' && contains(github.ref_name, 'nightly')) }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

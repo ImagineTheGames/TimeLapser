@@ -124,6 +124,7 @@ export default function SettingsPanel({ sessionFolder, frameCount, onClose, onOp
   const [panelPosition, setPanelPosition] = useState<{ top?: number; right?: number; bottom?: number; left?: number }>({ top: BAR_HEIGHT, right: 12 });
   const [testRunning, setTestRunning] = useState(false);
   const [testLogLines, setTestLogLines] = useState<string[]>([]);
+  const [intervalInputStr, setIntervalInputStr] = useState<string | null>(null);
   const autoRunDone = useRef(false);
 
   useEffect(() => {
@@ -424,11 +425,19 @@ export default function SettingsPanel({ sessionFolder, frameCount, onClose, onOp
           <span>Capture interval (seconds)</span>
           <input
             type="number"
-            min={0.1}
+            min={0.01}
             max={3600}
-            step={0.1}
-            value={Number(settings.intervalSeconds) || 5}
-            onChange={(e) => update('intervalSeconds', Math.max(0.1, Math.min(3600, parseFloat(e.target.value) || 1)))}
+            step={0.01}
+            value={intervalInputStr !== null ? intervalInputStr : String(Number(settings.intervalSeconds) || 5)}
+            onFocus={() => setIntervalInputStr(String(Number(settings.intervalSeconds) || 5))}
+            onChange={(e) => setIntervalInputStr(e.target.value)}
+            onBlur={() => {
+              const raw = intervalInputStr !== null ? intervalInputStr : String(Number(settings.intervalSeconds) || 5);
+              const num = parseFloat(raw);
+              const clamped = Number.isFinite(num) ? Math.max(0.01, Math.min(3600, num)) : 5;
+              setIntervalInputStr(null);
+              update('intervalSeconds', clamped);
+            }}
           />
         </label>
 
