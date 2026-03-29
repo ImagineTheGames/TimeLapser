@@ -1,6 +1,4 @@
-# TimeLapser v1.0.42 (Nightly)
-
-**This is a nightly (unstable) build.** Use it for testing; prefer a stable release for production.
+# TimeLapser v1.0.42
 
 ## New
 
@@ -13,4 +11,4 @@
 
 ## Install
 
-Download the Windows installer from the [Releases](https://github.com/ImagineTheGames/TimeLapser/releases) page. This build is listed as a **Pre-release**.
+Download the Windows installer from the [Releases](https://github.com/ImagineTheGames/TimeLapser/releases) page.
