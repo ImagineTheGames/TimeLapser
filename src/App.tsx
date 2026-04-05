@@ -112,24 +112,21 @@ export default function App() {
   return (
     <div className="app">
       {expanded ? (
-        <div className={`app__expanded ${panelOnRight ? 'app__expanded--panel-right' : ''}`}>
-          {!panelOnRight && (
-            <>
-              <div className="app__panel-wrap">
-                <SettingsPanel
-                  sessionFolder={state.sessionFolder}
-                  frameCount={state.frameCount}
-                  onClose={() => setExpanded(false)}
-                  onOpenFocusAssist={() => window.timelapser.openFocusAssist()}
-                  inline
-                  autoRunRecordingTest={autoRunRecordingTest}
-                  showTestUI={showTestUI}
-                />
-              </div>
-              <div className="app__gap" />
-            </>
-          )}
-          <div className="app__bar-wrap">
+        <div className="app__expanded">
+          {/* Single SettingsPanel + flex order so panelOnRight changes do not remount (avoids double auto recording test). */}
+          <div className="app__panel-wrap" style={{ order: panelOnRight ? 2 : 0 }}>
+            <SettingsPanel
+              sessionFolder={state.sessionFolder}
+              frameCount={state.frameCount}
+              onClose={() => setExpanded(false)}
+              onOpenFocusAssist={() => window.timelapser.openFocusAssist()}
+              inline
+              autoRunRecordingTest={autoRunRecordingTest}
+              showTestUI={showTestUI}
+            />
+          </div>
+          <div className="app__gap" style={{ order: 1 }} />
+          <div className="app__bar-wrap" style={{ order: panelOnRight ? 0 : 2 }}>
             <Overlay
               state={state.state}
               frameCount={state.frameCount}
@@ -146,22 +143,6 @@ export default function App() {
               onOpenSettings={() => setExpanded(!expanded)}
             />
           </div>
-          {panelOnRight && (
-            <>
-              <div className="app__gap" />
-              <div className="app__panel-wrap">
-                <SettingsPanel
-                  sessionFolder={state.sessionFolder}
-                  frameCount={state.frameCount}
-                  onClose={() => setExpanded(false)}
-                  onOpenFocusAssist={() => window.timelapser.openFocusAssist()}
-                  inline
-                  autoRunRecordingTest={autoRunRecordingTest}
-                  showTestUI={showTestUI}
-                />
-              </div>
-            </>
-          )}
         </div>
       ) : (
         <Overlay

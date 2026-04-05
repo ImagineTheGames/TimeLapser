@@ -88,7 +88,12 @@ function main() {
   (async () => {
     await wait(800);
 
-    const env = { ...process.env, RUN_RECORDING_TEST: '1', ELECTRON_USER_DATA: USER_DATA };
+    const env = {
+      ...process.env,
+      NODE_ENV: 'production',
+      RUN_RECORDING_TEST: '1',
+      ELECTRON_USER_DATA: USER_DATA,
+    };
     console.log('[run-recording-test] Starting Electron with RUN_RECORDING_TEST=1...');
     console.log('[run-recording-test] User data:', USER_DATA);
     const child = spawn('npx', ['electron', '.'], { cwd: PROJECT_ROOT, env, stdio: 'inherit', shell: true });

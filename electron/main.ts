@@ -6,6 +6,11 @@ import Store from 'electron-store';
 import screenshot from 'screenshot-desktop';
 import sharp from 'sharp';
 
+/** Isolated profile for `npm run test:recording` — must run before Store and `app.whenReady`. */
+if (process.env.ELECTRON_USER_DATA) {
+  app.setPath('userData', path.resolve(process.env.ELECTRON_USER_DATA));
+}
+
 const LOG_PREFIX = '[TimeLapser]';
 
 function getLogFilePath(): string | null {
@@ -145,8 +150,24 @@ function getOpenAtLogin(): boolean {
   return (store.get('openAtLogin') as boolean | undefined) ?? false;
 }
 
-/** True if we should show the overlay on startup. We always show so that when the user launches the app (e.g. installer "Run", Start menu) the window is visible. "Start with Windows" only controls whether the app runs at login; we don't start minimized. */
+/**
+ * True if we should show the overlay when the window finishes loading.
+ * - Normal launch (Start menu, installer "Run when setup finishes", dev): show so the user sees the app.
+ * - Launched as a Windows login item ("Start up with Windows"): stay in the tray until the user opens from the tray.
+ */
 function shouldShowWindowOnStartup(): boolean {
+  if (process.argv.includes('--test-export-zoom')) return true;
+  if (process.argv.includes('--test') || process.argv.includes('-test')) return true;
+  if (process.env.RUN_RECORDING_TEST === '1') return true;
+  try {
+    const { wasOpenedAtLogin } = app.getLoginItemSettings();
+    if (wasOpenedAtLogin) {
+      logMinimal('Startup: opened as login item — overlay stays hidden until tray');
+      return false;
+    }
+  } catch (err) {
+    logError('getLoginItemSettings in shouldShowWindowOnStartup:', (err as Error)?.message);
+  }
   return true;
 }
 
