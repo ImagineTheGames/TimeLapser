@@ -11,6 +11,22 @@ if (process.env.ELECTRON_USER_DATA) {
   app.setPath('userData', path.resolve(process.env.ELECTRON_USER_DATA));
 }
 
+/**
+ * One main process for normal use — avoids concurrent electron-store writes and duplicate tray icons.
+ * Skipped for automated main-process tests that may run beside a dev/packaged instance.
+ */
+const skipSingleInstanceLock =
+  process.env.RUN_RECORDING_TEST === '1' ||
+  process.argv.includes('--test-export-zoom');
+
+if (!skipSingleInstanceLock) {
+  const gotTheLock = app.requestSingleInstanceLock();
+  if (!gotTheLock) {
+    app.quit();
+    process.exit(0);
+  }
+}
+
 const LOG_PREFIX = '[TimeLapser]';
 
 /**
@@ -2072,6 +2088,13 @@ process.on('unhandledRejection', (reason, p) => {
 });
 
 logMinimal('Main process starting, app.isReady:', app.isReady());
+
+if (!skipSingleInstanceLock) {
+  app.on('second-instance', () => {
+    logMinimal('Second instance: showing overlay');
+    showOverlayWindow();
+  });
+}
 
 app.whenReady().then(async () => {
   logMinimal('App ready');
