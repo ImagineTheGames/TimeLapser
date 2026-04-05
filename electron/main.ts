@@ -13,6 +13,56 @@ if (process.env.ELECTRON_USER_DATA) {
 
 const LOG_PREFIX = '[TimeLapser]';
 
+/**
+ * electron-store reads `config.json` in userData; a truncated write, merge glitch, or BOM can make JSON.parse throw and crash the app before any window opens.
+ */
+function removeCorruptElectronStoreConfigIfNeeded(): void {
+  let userData: string;
+  try {
+    userData = app.getPath('userData');
+  } catch {
+    return;
+  }
+  const configPath = path.join(userData, 'config.json');
+  if (!fs.existsSync(configPath)) return;
+  let raw: string;
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch {
+    return;
+  }
+  const trimmed = raw.replace(/^\uFEFF/, '').trim();
+  if (!trimmed) {
+    try {
+      fs.unlinkSync(configPath);
+    } catch {
+      /* ignore */
+    }
+    return;
+  }
+  try {
+    JSON.parse(trimmed);
+  } catch {
+    const bak = path.join(userData, `config.corrupt-${Date.now()}.json.bak`);
+    try {
+      fs.renameSync(configPath, bak);
+    } catch {
+      try {
+        fs.unlinkSync(configPath);
+      } catch {
+        /* ignore */
+      }
+    }
+    try {
+      console.warn(LOG_PREFIX, 'config.json was unreadable; renamed to backup and will use defaults.', bak);
+    } catch {
+      // ignore EPIPE
+    }
+  }
+}
+
+removeCorruptElectronStoreConfigIfNeeded();
+
 function getLogFilePath(): string | null {
   try {
     if (!app.isReady()) return null;
@@ -73,7 +123,19 @@ function logError(message: string, ...args: unknown[]) {
   writeToLogFile(line, args);
 }
 
-const store = new Store<Record<string, unknown>>();
+let store: Store<Record<string, unknown>>;
+try {
+  store = new Store<Record<string, unknown>>();
+} catch (err) {
+  removeCorruptElectronStoreConfigIfNeeded();
+  try {
+    const p = path.join(app.getPath('userData'), 'config.json');
+    if (fs.existsSync(p)) fs.unlinkSync(p);
+  } catch {
+    /* ignore */
+  }
+  store = new Store<Record<string, unknown>>();
+}
 
 type CaptureSource = 'monitor' | 'window' | 'region';
 type CaptureState = 'idle' | 'recording' | 'paused';
