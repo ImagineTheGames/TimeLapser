@@ -1909,9 +1909,10 @@ ipcMain.handle('export-video', async (_e, args: {
         vfParts.push(`tpad=stop_mode=clone:stop_duration=${holdLastSec}`);
       }
       const baseChain = vfParts.join(',');
-      const concatInputOpts = maximizeDurationUnderLimit
-        ? ['-f', 'concat', '-safe', '0', '-r', String(outFps)]
-        : ['-f', 'concat', '-safe', '0'];
+      // Always pass -r on concat input so demuxer assigns each frame 1/outFps duration.
+      // Without this, concat defaults to ~25fps regardless of outFps and the fps filter
+      // cannot stretch/shrink the timeline -> exported duration != targetDurationSeconds.
+      const concatInputOpts = ['-f', 'concat', '-safe', '0', '-r', String(outFps)];
       if (hasWatermark) {
         const filterComplex = `[0:v]${baseChain}[v];[1:v]scale=200:-1[wm];[v][wm]${overlayPosExpr()}[out]`;
         const chain = ffmpeg()
